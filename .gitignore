@@ -1,4 +1,6 @@
 venv/
 .env
-data/**
-dataset/**
+datasets/**
+Sentinel2_anomaly_detection/**
+prova.py
+__pycache__/
