@@ -1,6 +1,20 @@
-# paths
+# --------------------------- paths
 dataset_path: "Sentinel2_anomaly_detection"
+artifacts_dir: "artifacts"
 
 
-# hyperparameters
+# --------------------------- data
 BANDS: ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B9", "B11", "B12"]
+
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "floods", "landslides", "mines"]
+TEST_CLASSES:  ["burn_scars", "floods", "landslides", "mines"]
+
+NORMAL_VAL_FRACTION: 0.10   # fraction of train normals
+EVAL_VAL_FRACTION: 0.20     # fraction of test images
+SPLIT_SALT: "ssad_1"
+
+CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
+
+
+# --------------------------- features
+N_DCT_COEFFS: 6       # number of DCT coefficients to keep

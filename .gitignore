@@ -3,4 +3,5 @@ venv/
 datasets/**
 Sentinel2_anomaly_detection/**
 prova.py
+test_preprocessing.py
 __pycache__/
