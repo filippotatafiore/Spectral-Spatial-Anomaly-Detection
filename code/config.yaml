@@ -11,7 +11,7 @@ TEST_CLASSES:  ["burn_scars", "floods", "landslides", "mines"]
 
 NORMAL_VAL_FRACTION: 0.10   # fraction of train normals
 EVAL_VAL_FRACTION: 0.20     # fraction of test images
-SPLIT_SALT: "ssad_1"
+SPLIT_SALT: "ssad_1"        # 
 
 CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
 
@@ -22,3 +22,40 @@ N_DCT_COEFFS: 6       # K, number of DCT coefficients to keep
 
 USE_RAW: true         # features = [raw_bands | dct_coeffs]
 USE_DCT: true
+
+
+# --------------------------- model
+D_MODEL: 64                   # 
+N_HEADS: 8                    # 
+N_LAYERS: 4                   # 
+DROPOUT: 0.1
+
+FFN_HIDDEN: 256               # 
+EMBED_HIDDEN: 128             #
+DECODER_HIDDEN: 128           #
+
+POS_ENCODING: "sinusoidal2d"  #
+
+MASK_CENTER: false
+
+
+# --------------------------- train
+EPOCHS: 30
+BATCH_IMAGES: 8
+CENTERS_PER_IMAGE: 512    # number of random centers to sample as (patches) centers per image for training
+
+LR: 3.0e-4                # optimizer learning rate
+WEIGHT_DECAY: 1.0e-4      # optimizer weight decay
+WARMUP_STEPS: 500         # scheduler warmup steps
+AMP: true                 # 
+
+GRAD_CLIP: 1.0            # gradient clipping threshold (None to disable)
+
+NUM_WORKERS: 2            # 
+
+SEED: 0                   # random seed for reproducibility
+
+LOSS_TOKENS: "all"        # "all" or "center": which tokens to compute the loss on
+
+EARLY_STOP_PATIENCE: 6    # early stopping patience (in epochs) for validation loss
+LOG_EVERY: 50             # for each epoch, print every LOG_EVERY steps

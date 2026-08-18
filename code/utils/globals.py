@@ -23,7 +23,8 @@ def _resolve(path_str, parents_up=2):
 # ======================================================= GLOBALS
 
 # --------------------------- paths
-DATASET_PATH = _resolve(config["dataset_path"], 2)
+_env_root = os.environ.get("SSAD_DATA_ROOT")
+DATASET_PATH = Path(_env_root) if _env_root else _resolve(config["dataset_path"], 2)
 ARTIFACTS_DIR = _resolve(config.get("artifacts_dir", "artifacts"), 1)
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -53,10 +54,50 @@ USE_DCT = config["USE_DCT"]
 FEATURE_DIM = (N_BANDS if USE_RAW else 0) + (N_DCT_COEFFS if USE_DCT else 0)    # C + K = F, features dimension
 
 
+# --------------------------- model
+D_MODEL = config["D_MODEL"]
+N_HEADS = config["N_HEADS"]
+N_LAYERS = config["N_LAYERS"]
+DROPOUT = config["DROPOUT"]
+
+FFN_HIDDEN = config["FFN_HIDDEN"]
+EMBED_HIDDEN = config["EMBED_HIDDEN"]
+DECODER_HIDDEN = config["DECODER_HIDDEN"]
+
+POS_ENCODING = config["POS_ENCODING"]
+
+MASK_CENTER = config["MASK_CENTER"]
+
+
+# --------------------------- train
+EPOCHS = config["EPOCHS"]
+BATCH_IMAGES = config["BATCH_IMAGES"]
+CENTERS_PER_IMAGE = config["CENTERS_PER_IMAGE"]
+
+LR = float(config["LR"])
+WEIGHT_DECAY = float(config["WEIGHT_DECAY"])
+WARMUP_STEPS = config["WARMUP_STEPS"]
+AMP = config["AMP"]
+
+GRAD_CLIP = config["GRAD_CLIP"]
+
+NUM_WORKERS = config["NUM_WORKERS"]
+
+SEED = config["SEED"]
+
+LOSS_TOKENS = config["LOSS_TOKENS"]
+
+EARLY_STOP_PATIENCE = config["EARLY_STOP_PATIENCE"]
+LOG_EVERY = config["LOG_EVERY"]
+
+
 
 # ======================================================= VALIDATION
 if not DATASET_PATH.is_dir():
-    raise FileNotFoundError(f"Dataset not found at {DATASET_PATH}. Set dataset_path in config.yaml")
+    raise FileNotFoundError(
+        f"Dataset not found at {DATASET_PATH}, "
+        "if using kaggle, add:  os.environ[\"SSAD_DATA_ROOT\"] = \"/kaggle/input/sentinel2-anomaly-detection\""
+    )
 
 if PATCH_SIZE % 2 == 0:
     raise ValueError(f"PATCH_SIZE must be odd (patches are pixel-centered), got {PATCH_SIZE}")

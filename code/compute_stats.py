@@ -14,8 +14,9 @@ def main():
     stats = compute_stats(train_files, N_BANDS, N_DCT_COEFFS, clip=CLIP_REFLECTANCE)
 
     stats["split_salt"] = SPLIT_SALT
-    stats["train_sources"] = TRAIN_SOURCES
+    stats["train_sources"] = list(TRAIN_SOURCES)
     stats["n_train_files"] = len(train_files)
+    stats["n_val_files"] = len(val_files)
 
     out_path = ARTIFACTS_DIR / "stats.json"
     with out_path.open("w") as fh:

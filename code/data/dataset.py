@@ -40,7 +40,7 @@ class NormalImagesDataset(Dataset):
         return _load_image(self.files[index], self.clip)
 
 
-class AnomalyImageDataset(Dataset):
+class AnomalyImagesDataset(Dataset):
     """
         Anomalous images with ground-truth pixel-level binary masks, for testing.
     """
