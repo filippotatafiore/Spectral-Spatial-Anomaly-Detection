@@ -13,7 +13,7 @@ def compute_stats(files, n_bands, n_dct_coeffs, clip=1.5, max_images=None, progr
         files = files[:max_images]
 
     # DCT matrix
-    dct = SpectralDCT(n_bands, n_dct_coeffs).dct_matrix.numpy().astype(np.float64)  # (K, num_bands) = (K, B)
+    dct = SpectralDCT(n_bands, n_dct_coeffs).dct_matrix.numpy().astype(np.float64)  # (K, num_bands) = (K, C)
 
     count = 0  # total number of pixels across all images
     feature_dim = n_bands + n_dct_coeffs
@@ -26,10 +26,10 @@ def compute_stats(files, n_bands, n_dct_coeffs, clip=1.5, max_images=None, progr
         if clip is not None:
             np.clip(arr, 0.0, clip, out=arr)  # Clip values to [0, clip]
 
-        raw = arr.reshape(n_bands, -1)  # (num_bands, num_pixels) = (B, N)
-        feat = np.concatenate([raw, dct @ raw], axis=0)  # (num_bands + num_coeffs, num_pixels) = (B + K, N)
+        raw = arr.reshape(n_bands, -1)  # (num_bands, num_pixels) = (C, num_pixels)
+        feat = np.concatenate([raw, dct @ raw], axis=0)  # (num_bands + num_coeffs, num_pixels) = (C + K, num_pixels)
 
-        count += raw.shape[1]  # num_pixels = N
+        count += raw.shape[1]  # num_pixels
         sum_feat += feat.sum(axis=1)
         sumsq_feat += (feat ** 2).sum(axis=1)
         gram_raw += raw @ raw.T

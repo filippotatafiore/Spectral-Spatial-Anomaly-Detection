@@ -15,6 +15,7 @@ def main():
 
     stats["split_salt"] = SPLIT_SALT
     stats["train_sources"] = TRAIN_SOURCES
+    stats["n_train_files"] = len(train_files)
 
     out_path = ARTIFACTS_DIR / "stats.json"
     with out_path.open("w") as fh:

@@ -17,4 +17,8 @@ CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalizati
 
 
 # --------------------------- features
-N_DCT_COEFFS: 6       # number of DCT coefficients to keep
+PATCH_SIZE: 9         # P, must be odd (patches are pixel-centered)
+N_DCT_COEFFS: 6       # K, number of DCT coefficients to keep
+
+USE_RAW: true         # features = [raw_bands | dct_coeffs]
+USE_DCT: true

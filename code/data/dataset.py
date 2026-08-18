@@ -18,7 +18,7 @@ def _load_image(path, clip=CLIP_REFLECTANCE):
     if clip is not None:
         np.clip(arr, 0.0, clip, out=arr)
 
-    return torch.from_numpy(arr)
+    return torch.from_numpy(arr)  # (12, 120, 120) = (C, H, W)
 
 
 class NormalImagesDataset(Dataset):
@@ -62,6 +62,7 @@ class AnomalyImageDataset(Dataset):
 def make_loader(dataset, batch_size, num_workers=0, shuffle=False, seed=0):
     """
         Create DataLoader for the given dataset.
+        Stack B (batch_size) images -> (B, C, H, W)
     """
 
     generator = None

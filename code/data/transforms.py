@@ -7,70 +7,71 @@ import torch.nn.functional as F
 
 def center_token_index(patch_size):
     """
-        patch_size: P
-        Index of center pixel in the flattened P x P patch.
+        patch_size = P
+        Compute the index of center pixel in the flattened P x P patch.
     """
     return (patch_size * patch_size) // 2
 
 
 def token_coords(patch_size, device=None):
     """
-        Coordinates of each token.
+        Coordinates of each token inside the patch.
     """
     rows = torch.arange(patch_size, device=device)
     cols = torch.arange(patch_size, device=device)
     grid_r, grid_c = torch.meshgrid(rows, cols, indexing="ij")
-    return torch.stack([grid_r.reshape(-1), grid_c.reshape(-1)], dim=1)
+    return torch.stack([grid_r.reshape(-1), grid_c.reshape(-1)], dim=1)  # (P*P, 2)
 
 
 def sample_centers(n_images, height, width, n_centers, device, generator=None):
     """
-        Random flat pixel indices.
+        For training: sample n_centers random flat pixel indices as centers from each image in the batch.
     """
     return torch.randint(
         0, height * width, (n_images, n_centers),
         device=device, generator=generator, dtype=torch.long,
-    )
+    )  # (n_images, n_centers) = (batch_size, n_centers) = (B, N)
 
 
 def iter_all_centers(height, width, chunk, device):
     """
-        Yield chunks of all flat center indices in raster order.
+        For inference: use all pixels (all flat center indices in raster order) as centers.
+        Yield them in chunks.
     """
     total = height * width
     for start in range(0, total, chunk):
-        yield torch.arange(start, min(start + chunk, total), device=device, dtype=torch.long)
+        yield torch.arange(start, min(start + chunk, total), device=device, dtype=torch.long)  # (chunk,)
 
 
 def extract_patches(images, centers, patch_size):
     """
-        Extract pixel-centered patches
+        Extract P x P pixel-centered patches
 
         images: (B, C, H, W)
-        centers: (B, N)
-        patch_size: P
+        centers: (batch_size, num_centers) = (B, N)
+        patch_size = P
     """
     batch, channels, height, width = images.shape  # (B, 12, 120, 120)
 
     # Pad the images to handle pixels near the edge
     pad = patch_size // 2
-    padded = F.pad(images, (pad, pad, pad, pad), mode="reflect")
+    padded = F.pad(images, (pad, pad, pad, pad), mode="reflect")  # (B, C, H+2*pad, W+2*pad)
     padded_w = width + 2 * pad
 
-    # Compute indices of the center pixels
+    # Compute row and column indices of the centers
     n_centers = centers.shape[1]
     rows = torch.div(centers, width, rounding_mode="floor")
     cols = centers % width
 
-    # Flat indices of the patches
-    offsets = token_coords(patch_size, device=images.device)           # (P*P, 2)
-    flat_idx = (rows.unsqueeze(-1) + offsets[:, 0]) * padded_w + (cols.unsqueeze(-1) + offsets[:, 1])
-    flat_idx = flat_idx.reshape(batch, 1, -1).expand(batch, channels, -1)
+    # Flat indices of every token of the patches
+    offsets = token_coords(patch_size, device=images.device)  # (P*P, 2)
+    flat_idx = (rows.unsqueeze(-1) + offsets[:, 0]) * padded_w + (cols.unsqueeze(-1) + offsets[:, 1])  # (B, N, P*P) = (B, N, T)
+    flat_idx = flat_idx.reshape(batch, 1, -1).expand(batch, channels, -1)  # (B, C, N*T)
 
     # Gather the patches
-    gathered = torch.gather(padded.reshape(batch, channels, -1), 2, flat_idx)
-    gathered = gathered.reshape(batch, channels, n_centers, patch_size * patch_size)
-    return gathered.permute(0, 2, 3, 1).contiguous()  # (B, N, P*P, C)
+    gathered = torch.gather(padded.reshape(batch, channels, -1), 2, flat_idx)  # (B, C, N*T)
+    gathered = gathered.reshape(batch, channels, n_centers, patch_size * patch_size)  # (B, C, N, T)
+    return gathered.permute(0, 2, 3, 1).contiguous()  # (B, N, P*P, C) = (B, N, T, C)
 
 
 class SpectralDCT(nn.Module):
@@ -109,13 +110,13 @@ class SpectralDCT(nn.Module):
 
     def forward(self, patches):
         # apply 1D DCT to the Channel dimension
-        # patches = X^T : (Num_Patches, patch_H, patch_W, C)
+        # patches = X^T : (B, N, P*P, C) = (B, N, T, C)
 
         if patches.shape[-1] != self.num_bands:
             raise ValueError(f"Expected last dim (num_bands) {self.num_bands}, got {patches.shape[-1]}")
 
         # DCT-II formula (matrix form): DCT_output^T = X^T * M^T
-        return torch.matmul(patches, self.dct_matrix.t())  # (Num_Patches, patch_H, patch_W, K)
+        return torch.matmul(patches, self.dct_matrix.t())  # (B, N, T, C) @ (C, K) = (B, N, T, K)
 
 
 class FeatureBuilder(nn.Module):
@@ -147,26 +148,33 @@ class FeatureBuilder(nn.Module):
         self.register_buffer("band_std", torch.as_tensor(feature_std[:num_bands], dtype=torch.float32))
 
     def forward(self, raw_patches):
-        # raw_patches: (Num_Patches, patch_size, patch_size, num_bands)
+        # raw_patches: (batch_size, num_centers, P*P, C) = (B, N, T, C)
         
         parts = []
         if self.use_raw:
-            parts.append(raw_patches)  # raw patches: (Num_Patches, patch_size, patch_size, num_bands)
+            parts.append(raw_patches)  # raw patches: (B, N, T, C)
         if self.use_dct:
-            parts.append(self.dct(raw_patches))  # dct coeffs: (Num_Patches, patch_size, patch_size, K)
+            parts.append(self.dct(raw_patches))  # dct coeffs: (B, N, T, K)
 
         # Concatenate features along the last dimension
-        features = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]
+        features = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]  # (B, N, T, C+K)
         # Standardization
-        features = (features - self.mean) / self.std
+        features = (features - self.mean) / self.std  # (B, N, T, C+K) = (B, N, T, F)
 
         if self.use_raw:
-            target = features[..., : self.num_bands]
+            target = features[..., : self.num_bands]  # (B, N, T, C)
         else:
             target = (raw_patches - self.band_mean) / self.band_std
 
-        return features, target
+        return features, target  # (B, N, T, F), (B, N, T, C)
 
     def standardize_image(self, images):
-        # Standardize images
-        return (images - self.band_mean.view(1, -1, 1, 1)) / self.band_std.view(1, -1, 1, 1)
+        """
+            Standardize images.
+
+            images: (B, C, H, W)
+        """
+        if images.dim() != 4:
+            raise ValueError(f"standardize_image expects (B, C, H, W), got {tuple(images.shape)}")
+        
+        return (images - self.band_mean.view(1, -1, 1, 1)) / self.band_std.view(1, -1, 1, 1)  # (B, C, H, W)

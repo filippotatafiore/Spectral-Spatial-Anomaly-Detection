@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 from utils.globals import DATASET_PATH, TRAIN_SOURCES, TEST_CLASSES, NORMAL_VAL_FRACTION, EVAL_VAL_FRACTION, SPLIT_SALT
 
@@ -80,10 +81,22 @@ def split_eval(root=DATASET_PATH, classes=None, val_fraction=None, salt=SPLIT_SA
     return out
 
 
+def _subsample_key(item):
+    """
+        Identity of an item: filenames only.
+    """
+    if isinstance(item, Path):
+        return item.name
+    if isinstance(item, (tuple, list)):
+        return "|".join(_subsample_key(sub) for sub in item)
+    return str(item)
+
+
 def subsample(items, limit, salt=SPLIT_SALT):
     """
-        Keep at most "limit" items by random subsampling, deteriministically (sorts items by hash, which is consistent).
+        Keep at most "limit" items by random subsampling, deterministically
+        (sorts items by hash, which is consistent).
     """
     if limit is None or len(items) <= limit:
         return items
-    return sorted(items, key=lambda it: stable_bucket(str(it), salt, n_buckets=10 ** 9))[:limit]
+    return sorted(items, key=lambda it: stable_bucket(_subsample_key(it), salt, n_buckets=10 ** 9))[:limit]
