@@ -1,7 +1,8 @@
 import hashlib
 from pathlib import Path
+import re
 
-from utils.globals import DATASET_PATH, TRAIN_SOURCES, TEST_CLASSES, NORMAL_VAL_FRACTION, EVAL_VAL_FRACTION, SPLIT_SALT
+from utils.globals import DATASET_PATH, TRAIN_SOURCES, TEST_CLASSES, NORMAL_VAL_FRACTION, EVAL_VAL_FRACTION, SPLIT_SALT, GROUPED_SPLIT
 
 
 
@@ -12,6 +13,19 @@ def stable_bucket(name, salt="", n_buckets=1000):
     """
     digest = hashlib.sha1(f"{salt}::{name}".encode("utf-8")).hexdigest()
     return int(digest[:12], 16) % n_buckets
+
+
+def group_key(source, filename):
+    """
+        If file comes from a grouped source (ben-ge data), return the identifier of the acquisition it came from.
+    """
+    # ben-ge product ID is the first part of the filename (e.g. S2A_MSIL2A_20230501T103021_N0509_R108_T32TNR_20230501T123456)
+    m = re.match(r"(S2[AB]_MSIL2A_\d+T\d+)_", filename)
+    if m:
+        return f"{source}/{m.group(1)}"
+    
+    return f"{source}/{filename}"  # fall back to per-file
+
 
 def split_normals(root=DATASET_PATH, sources=None, val_fraction=None, salt=SPLIT_SALT):
     """
@@ -30,7 +44,9 @@ def split_normals(root=DATASET_PATH, sources=None, val_fraction=None, salt=SPLIT
             raise FileNotFoundError(f"Missing train source: {src_dir}")
         
         for path in sorted(src_dir.glob("*.npy")):
-            bucket = stable_bucket(f"{source}/{path.name}", salt)
+            # ben-ge contains multiple files from the same acquisition -> hash per acquisition (group) instead of per file
+            key = group_key(source, path.name) if GROUPED_SPLIT else f"{source}/{path.name}"
+            bucket = stable_bucket(key, salt)
             (val_files if bucket < threshold else train_files).append(path)
 
     return train_files, val_files  # file paths

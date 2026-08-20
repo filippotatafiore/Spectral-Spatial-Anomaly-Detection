@@ -39,6 +39,7 @@ TEST_CLASSES = config["TEST_CLASSES"]
 NORMAL_VAL_FRACTION = config["NORMAL_VAL_FRACTION"]
 EVAL_VAL_FRACTION = config["EVAL_VAL_FRACTION"]
 SPLIT_SALT = config["SPLIT_SALT"]
+GROUPED_SPLIT = config.get("GROUPED_SPLIT", False)
 
 CLIP_REFLECTANCE = config["CLIP_REFLECTANCE"]
 
@@ -84,11 +85,13 @@ GRAD_CLIP = config["GRAD_CLIP"]
 NUM_WORKERS = config["NUM_WORKERS"]
 
 SEED = config["SEED"]
+VAL_SEED = config["VAL_SEED"]
 
 LOSS_TOKENS = config["LOSS_TOKENS"]
 
 EARLY_STOP_PATIENCE = config["EARLY_STOP_PATIENCE"]
 LOG_EVERY = config["LOG_EVERY"]
+CKPT_EVERY = config.get("CKPT_EVERY", 0)
 
 
 
@@ -105,3 +108,13 @@ if not (1 <= N_DCT_COEFFS <= N_BANDS):
     raise ValueError(f"N_DCT_COEFFS must be in [1, {N_BANDS}], got {N_DCT_COEFFS}")
 if FEATURE_DIM == 0:
     raise ValueError(f"At least one of USE_RAW or USE_DCT must be True, got USE_RAW={USE_RAW}, USE_DCT={USE_DCT}")
+if D_MODEL % N_HEADS != 0:
+    raise ValueError(f"D_MODEL (= {D_MODEL}) must be divisible by N_HEADS (= {N_HEADS})")
+
+if POS_ENCODING == "sinusoidal2d" and D_MODEL % 4 != 0:
+    raise ValueError(f"D_MODEL ({D_MODEL}) must be divisible by 4 for the 2D sinusoidal encoding")
+if POS_ENCODING not in ("sinusoidal2d", "learned"):
+    raise ValueError(f"POS_ENCODING must be 'sinusoidal2d' or 'learned', got {POS_ENCODING!r}")
+
+if LOSS_TOKENS not in ("all", "center"):
+    raise ValueError(f"LOSS_TOKENS must be 'all' or 'center', got {LOSS_TOKENS!r}")

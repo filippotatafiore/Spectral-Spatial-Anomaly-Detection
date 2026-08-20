@@ -12,6 +12,7 @@ TEST_CLASSES:  ["burn_scars", "floods", "landslides", "mines"]
 NORMAL_VAL_FRACTION: 0.10   # fraction of train normals
 EVAL_VAL_FRACTION: 0.20     # fraction of test images
 SPLIT_SALT: "ssad_1"        # 
+GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val
 
 CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
 
@@ -25,37 +26,40 @@ USE_DCT: true
 
 
 # --------------------------- model
-D_MODEL: 64                   # 
-N_HEADS: 8                    # 
-N_LAYERS: 4                   # 
+D_MODEL: 64                   # transformer width. Must be divisible by N_HEADS, and by 4 if using POS_ENCODING = sinusoidal2d
+                              # Note: if D_MODEL > FEATURE_DIM then there is no bottleneck and the model could learn the identity map
+N_HEADS: 8                    # attention heads, head_dim = D_MODEL/N_HEADS = 8
+N_LAYERS: 4                   # encoder blocks
 DROPOUT: 0.1
 
-FFN_HIDDEN: 256               # 
-EMBED_HIDDEN: 128             #
-DECODER_HIDDEN: 128           #
+FFN_HIDDEN: 256               # feed-forward inner width
+EMBED_HIDDEN: 128             # embedding MLP hidden width
+DECODER_HIDDEN: 128           # decoder MLP hidden width
 
-POS_ENCODING: "sinusoidal2d"  #
+POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
 
-MASK_CENTER: false
+MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood.
 
 
 # --------------------------- train
 EPOCHS: 30
 BATCH_IMAGES: 8
-CENTERS_PER_IMAGE: 512    # number of random centers to sample as (patches) centers per image for training
+CENTERS_PER_IMAGE: 256    # number of random centers to sample as (patches) centers per image for training
 
 LR: 3.0e-4                # optimizer learning rate
 WEIGHT_DECAY: 1.0e-4      # optimizer weight decay
 WARMUP_STEPS: 500         # scheduler warmup steps
-AMP: true                 # 
+AMP: true                 # float16 autocast
 
 GRAD_CLIP: 1.0            # gradient clipping threshold (None to disable)
 
-NUM_WORKERS: 2            # 
+NUM_WORKERS: 2            # DataLoader worker processes
 
-SEED: 0                   # random seed for reproducibility
+SEED: 0                   # random seed for reproducibility (model init, data shuffling, center sampling)
+VAL_SEED: 12345           # random seed for centers used for the validation loss
 
 LOSS_TOKENS: "all"        # "all" or "center": which tokens to compute the loss on
 
-EARLY_STOP_PATIENCE: 6    # early stopping patience (in epochs) for validation loss
+EARLY_STOP_PATIENCE: 999  # early stopping patience (in epochs) for validation loss
 LOG_EVERY: 50             # for each epoch, print every LOG_EVERY steps
+CKPT_EVERY: 5             # save a checkpoint model every CKPT_EVERY epochs

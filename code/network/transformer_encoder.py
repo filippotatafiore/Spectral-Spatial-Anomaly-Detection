@@ -26,20 +26,22 @@ class MultiHeadSelfAttention(nn.Module):
         qkv = qkv.permute(2, 0, 3, 1, 4)
         query, key, value = qkv[0], qkv[1], qkv[2]
 
-        if center is None and not return_maps:
-            out = F.scaled_dot_product_attention(
-                query, key, value, dropout_p=self.dropout if self.training else 0.0
-            )
+        if center is None and not return_maps:  # training
+            out = F.scaled_dot_product_attention(query, key, value, dropout_p=self.dropout if self.training else 0.0)
             stats = None
-        else:
+
+        else:  # evaluation
             attn = ((query @ key.transpose(-2, -1)) * self.scale).softmax(dim=-1)
             out = self.attn_drop(attn) @ value
+
+            # compute center-token statistics
             stats = {}
             if center is not None:
-                row = attn[:, :, center, :]  # what the center token attends TO
+                row = attn[:, :, center, :]  # what the center token attends to
                 col = attn[:, :, :, center]  # attention the center receives
                 stats["center_entropy"] = -(row * torch.log(row.clamp_min(1e-12))).sum(-1)
                 stats["center_received"] = col.mean(dim=-1)
+            # compute attention maps
             if return_maps:
                 stats["attn"] = attn.detach()
 

@@ -97,10 +97,10 @@ class SpectralSpatialTransformerAE(nn.Module):
         for block in self.blocks:
             x, stats = block(x, center=center, return_maps=return_maps)
             if stats:
-                if "center_entropy" in stats:
+                if "center_entropy" in stats:  # get center-token statistics
                     entropies.append(stats["center_entropy"])
                     received.append(stats["center_received"])
-                if "attn" in stats:
+                if "attn" in stats:  # get attention maps
                     maps.append(stats["attn"])
 
         out = {"recon": self.decoder(self.norm_out(x))}
