@@ -38,28 +38,30 @@ DECODER_HIDDEN: 128           # decoder MLP hidden width
 
 POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
 
-MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood.
+MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
+INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
 
 
 # --------------------------- train
 EPOCHS: 30
 BATCH_IMAGES: 8
-CENTERS_PER_IMAGE: 256    # number of random centers to sample as (patches) centers per image for training
+CENTERS_PER_IMAGE: 256      # number of random centers to sample as (patches) centers per image for training
 
-LR: 3.0e-4                # optimizer learning rate
-WEIGHT_DECAY: 1.0e-4      # optimizer weight decay
-WARMUP_STEPS: 500         # scheduler warmup steps
-AMP: true                 # float16 autocast
+LR: 3.0e-4                  # optimizer learning rate
+WEIGHT_DECAY: 1.0e-4        # optimizer weight decay
+WARMUP_STEPS: 500           # scheduler warmup steps
+AMP: true                   # float16 autocast
 
-GRAD_CLIP: 1.0            # gradient clipping threshold (None to disable)
+GRAD_CLIP: 1.0              # gradient clipping threshold (None to disable)
 
-NUM_WORKERS: 2            # DataLoader worker processes
+NUM_WORKERS: 2              # DataLoader worker processes
+SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
 
-SEED: 0                   # random seed for reproducibility (model init, data shuffling, center sampling)
-VAL_SEED: 12345           # random seed for centers used for the validation loss
+SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
+VAL_SEED: 12345             # random seed for centers used for the validation loss
 
-LOSS_TOKENS: "all"        # "all" or "center": which tokens to compute the loss on
+LOSS_TOKENS: "all"          # "all" or "center": which tokens to compute the loss on
 
-EARLY_STOP_PATIENCE: 999  # early stopping patience (in epochs) for validation loss
-LOG_EVERY: 50             # for each epoch, print every LOG_EVERY steps
-CKPT_EVERY: 5             # save a checkpoint model every CKPT_EVERY epochs
+EARLY_STOP_PATIENCE: 999    # early stopping patience (in epochs) for validation loss
+LOG_EVERY: 50               # for each epoch, print every LOG_EVERY steps
+CKPT_EVERY: 5               # save a checkpoint model every CKPT_EVERY epochs

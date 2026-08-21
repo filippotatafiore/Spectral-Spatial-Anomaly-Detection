@@ -68,6 +68,7 @@ DECODER_HIDDEN = config["DECODER_HIDDEN"]
 POS_ENCODING = config["POS_ENCODING"]
 
 MASK_CENTER = config["MASK_CENTER"]
+INPUT_NOISE_STD = float(config.get("INPUT_NOISE_STD", 0.0))
 
 
 # --------------------------- train
@@ -83,6 +84,7 @@ AMP = config["AMP"]
 GRAD_CLIP = config["GRAD_CLIP"]
 
 NUM_WORKERS = config["NUM_WORKERS"]
+SOURCE_BALANCE_POWER = float(config.get("SOURCE_BALANCE_POWER", 0.0))
 
 SEED = config["SEED"]
 VAL_SEED = config["VAL_SEED"]

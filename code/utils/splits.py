@@ -116,3 +116,22 @@ def subsample(items, limit, salt=SPLIT_SALT):
     if limit is None or len(items) <= limit:
         return items
     return sorted(items, key=lambda it: stable_bucket(_subsample_key(it), salt, n_buckets=10 ** 9))[:limit]
+
+
+def split_fingerprint():
+    """
+        Compute a fingerprint of the current split.
+    """
+    h = hashlib.sha256()
+
+    train_files, val_files = split_normals()
+    for tag, files in (("TRAIN", train_files), ("VAL", val_files)):
+        for name in sorted(f"{p.parent.name}/{p.name}" for p in files):
+            h.update(f"{tag}:{name}\n".encode())
+
+    for cls, buckets in sorted(split_eval().items()):
+        for part in ("val", "test"):
+            for name in sorted(t[0].name for t in buckets[part]):
+                h.update(f"{cls}:{part}:{name}\n".encode())
+
+    return h.hexdigest()

@@ -5,10 +5,11 @@ import torch.nn.functional as F
 import time
 import json
 import platform
+import argparse
 
 from utils.globals import (
     PATCH_SIZE, CENTERS_PER_IMAGE, LOSS_TOKENS,
-    SEED, VAL_SEED, MASK_CENTER, FEATURE_DIM, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, N_BANDS, N_DCT_COEFFS, USE_RAW, USE_DCT,
+    SEED, VAL_SEED, MASK_CENTER, INPUT_NOISE_STD, FEATURE_DIM, SOURCE_BALANCE_POWER, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, N_BANDS, N_DCT_COEFFS, USE_RAW, USE_DCT,
     D_MODEL, N_HEADS, N_LAYERS, FFN_HIDDEN, DROPOUT, EMBED_HIDDEN, DECODER_HIDDEN, POS_ENCODING, LR, WEIGHT_DECAY,
     EPOCHS, WARMUP_STEPS, AMP, ARTIFACTS_DIR,
     GRAD_CLIP, LOG_EVERY, EARLY_STOP_PATIENCE, CKPT_EVERY,
@@ -20,7 +21,7 @@ from utils.seed import set_seed
 from utils.splits import split_normals, split_fingerprint
 
 from data.transforms import center_token_index, extract_patches, sample_centers, FeatureBuilder
-from data.dataset import make_loader, NormalImagesDataset
+from data.dataset import make_loader, make_source_weights, NormalImagesDataset
 
 from network.transformer_ae import SpectralSpatialTransformerAE
 
@@ -43,6 +44,9 @@ def training_step(model, builder, images, generator):
     raw = extract_patches(images, centers, PATCH_SIZE)  # (B, N, T, C)
     # Build features and target from the raw patches
     features, target = builder(raw)  # (B, N, T, F), (B, N, T, C)
+    # Corrupt the input (leave target clean) at training time (add gaussian noise to the features)
+    if INPUT_NOISE_STD > 0 and model.training:
+        features = features + torch.randn(features.shape, device=features.device, dtype=features.dtype, generator=generator) * INPUT_NOISE_STD
     tokens = PATCH_SIZE * PATCH_SIZE
     features = features.reshape(-1, tokens, features.shape[-1])  # (B*N, T, F)
     target = target.reshape(-1, tokens, target.shape[-1])  # (B*N, T, C)
@@ -114,10 +118,14 @@ def main():
     print(f"Train images: {len(train_files)} | val images: {len(val_files)}")
 
     # Create data loaders for training and validation
+    train_weights = make_source_weights(train_files, SOURCE_BALANCE_POWER)
+    if train_weights is not None:
+        print(f"Balanced sampling active (power={SOURCE_BALANCE_POWER})")
     train_loader = make_loader(
         NormalImagesDataset(train_files, CLIP_REFLECTANCE),  # training dataset
-        BATCH_IMAGES, NUM_WORKERS, shuffle=True, seed=SEED,
+        BATCH_IMAGES, NUM_WORKERS, shuffle=True, seed=SEED, weights=train_weights,
     )
+
     val_loader = make_loader(
         NormalImagesDataset(val_files, CLIP_REFLECTANCE),
         BATCH_IMAGES, NUM_WORKERS
@@ -258,19 +266,33 @@ def main():
             "epoch": epoch, "step": step, "best_val": best_val, "best_epoch": best_epoch,
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
+            "center_generator": generator.get_state(),
+            "loader_generator": train_loader.generator.get_state() if train_loader.generator is not None else None,
+            "history": history,
+            "step_history": step_history,
+            "bad_epochs": bad_epochs,
+            "epochs_planned": EPOCHS,
+            "batch_images": BATCH_IMAGES,
         }, last_model_path)
 
         # Save snapshots every CKPT_EVERY epochs
-        if CKPT_EVERY is not None and (epoch + 1) % CKPT_EVERY == 0:
+        if CKPT_EVERY and (epoch + 1) % CKPT_EVERY == 0:
             torch.save({
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": scheduler.state_dict(),
-                        "scaler": scaler.state_dict(),
-                        "epoch": epoch, "step": step, "best_val": best_val, "val_loss": val_loss,
-                        "torch_rng": torch.get_rng_state(),
-                        "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
-                    }, ARTIFACTS_DIR / f"epoch_{epoch:03d}.pt")
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict(),
+                "epoch": epoch, "step": step, "best_val": best_val, "val_loss": val_loss,
+                "torch_rng": torch.get_rng_state(),
+                "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
+                "center_generator": generator.get_state(),
+                "loader_generator": train_loader.generator.get_state() if train_loader.generator is not None else None,
+                "history": history,
+                "step_history": step_history,
+                "bad_epochs": bad_epochs,
+                "epochs_planned": EPOCHS,
+                "batch_images": BATCH_IMAGES,
+            }, ARTIFACTS_DIR / f"epoch_{epoch:03d}.pt")
 
         # Early stopping
         if bad_epochs >= EARLY_STOP_PATIENCE:

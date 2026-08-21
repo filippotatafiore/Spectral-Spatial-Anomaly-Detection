@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from collections import Counter
+from torch.utils.data import WeightedRandomSampler
 
 from utils.globals import DATASET_PATH, N_BANDS, CLIP_REFLECTANCE
 
@@ -59,10 +61,25 @@ class AnomalyImagesDataset(Dataset):
         return image, mask, class_name, img_path.stem
 
 
-def make_loader(dataset, batch_size, num_workers=0, shuffle=False, seed=0):
+def make_source_weights(files, power):
+    """
+        Dataset is unbalanced -> oversample rare training sources with weight 1/n_source^power.
+    """
+
+    if power <= 0:
+        return None
+
+    sources = [p.parent.name for p in files]
+    counts = Counter(sources)
+    return torch.tensor([1.0 / (counts[s] ** power) for s in sources], dtype=torch.double)
+
+
+def make_loader(dataset, batch_size, num_workers=0, shuffle=False, seed=0, weights=None):
     """
         Create DataLoader for the given dataset.
         Stack B (batch_size) images -> (B, C, H, W)
+
+        weights: per-sample sampling weights computed with make_source_weights().
     """
 
     generator = None
@@ -70,13 +87,22 @@ def make_loader(dataset, batch_size, num_workers=0, shuffle=False, seed=0):
         generator = torch.Generator()
         generator.manual_seed(seed)
 
+    # WeightedRandomSampler replaces shuffling.
+    sampler = None
+    if weights is not None and shuffle:
+        sampler = WeightedRandomSampler(
+            weights, num_samples=len(dataset), replacement=True, generator=generator
+        )
+        shuffle = False
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
-        drop_last=shuffle,
+        drop_last=sampler is not None or shuffle,
         generator=generator,
         persistent_workers=num_workers > 0,
     )
