@@ -96,6 +96,18 @@ LOG_EVERY = config["LOG_EVERY"]
 CKPT_EVERY = config.get("CKPT_EVERY", 0)
 
 
+# --------------------------- evaluation
+CHUNK_PIXELS = config["CHUNK_PIXELS"]
+MAX_IMAGES_PER_CLASS = config["MAX_IMAGES_PER_CLASS"]
+MAX_NORMAL_CALIB_IMAGES = config["MAX_NORMAL_CALIB_IMAGES"]
+
+ALPHA_GRID = config["ALPHA_GRID"]
+
+SELECTION_EXCLUDE = config.get("SELECTION_EXCLUDE", [])
+SAVE_MAPS_PER_CLASS = config.get("SAVE_MAPS_PER_CLASS", 0)
+PCA_COMPONENTS = config.get("PCA_COMPONENTS", 4)
+
+
 
 # ======================================================= VALIDATION
 if not DATASET_PATH.is_dir():

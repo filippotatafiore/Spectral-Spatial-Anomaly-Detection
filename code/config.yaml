@@ -55,7 +55,7 @@ AMP: true                   # float16 autocast
 GRAD_CLIP: 1.0              # gradient clipping threshold (None to disable)
 
 NUM_WORKERS: 2              # DataLoader worker processes
-SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SOURCE_BALANCE_POWER: 0.0   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
 
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 VAL_SEED: 12345             # random seed for centers used for the validation loss
@@ -65,3 +65,15 @@ LOSS_TOKENS: "all"          # "all" or "center": which tokens to compute the los
 EARLY_STOP_PATIENCE: 999    # early stopping patience (in epochs) for validation loss
 LOG_EVERY: 50               # for each epoch, print every LOG_EVERY steps
 CKPT_EVERY: 5               # save a checkpoint model every CKPT_EVERY epochs
+
+
+# --------------------------- evaluation
+CHUNK_PIXELS: 512                                                     # center pixels scored per forward pass at inference
+MAX_IMAGES_PER_CLASS: 250                                             # maximum number of test images per class to score (null = use all)
+MAX_NORMAL_CALIB_IMAGES: 200                                          # maximum number of held-out normal images to use to calibrate the score scales
+
+ALPHA_GRID: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]   # grid of alpha values
+
+SELECTION_EXCLUDE: ["floods"]                                         # excluded from alpha/variant selection (floods has 3 val images)
+SAVE_MAPS_PER_CLASS: 4                                                # score maps saved per class for qualitative figures
+PCA_COMPONENTS: 4                                                     # components for the PCA baseline

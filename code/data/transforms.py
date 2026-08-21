@@ -162,7 +162,7 @@ class FeatureBuilder(nn.Module):
         features = (features - self.mean) / self.std  # (B, N, T, C+K) = (B, N, T, F)
 
         if self.use_raw:
-            target = features[..., : self.num_bands]  # (B, N, T, C)
+            target = features[..., : self.num_bands].clone()  # (B, N, T, C)
         else:
             target = (raw_patches - self.band_mean) / self.band_std
 

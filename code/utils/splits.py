@@ -135,3 +135,13 @@ def split_fingerprint():
                 h.update(f"{cls}:{part}:{name}\n".encode())
 
     return h.hexdigest()
+
+
+if __name__ == "__main__":
+    train_files, val_files = split_normals()
+    print(f"normals      : {len(train_files)} train / {len(val_files)} val")
+    for cls, b in split_eval().items():
+        print(f"  {cls:<12} val={len(b['val']):5d} test={len(b['test']):5d}")
+    print(f"SPLIT_SALT   : {SPLIT_SALT}")
+    print(f"GROUPED_SPLIT: {GROUPED_SPLIT}")
+    print(f"FINGERPRINT  : {split_fingerprint()}")
