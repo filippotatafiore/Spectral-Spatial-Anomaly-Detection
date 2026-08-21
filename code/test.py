@@ -138,6 +138,7 @@ def main():
     tag = "random_init" if args.random_init else "sst"
     out_path = args.out or (ARTIFACTS_DIR / f"results_{tag}.json")
 
+    # Build model and load weights
     builder = FeatureBuilder(N_BANDS, N_DCT_COEFFS, USE_RAW, USE_DCT, stats["feature_mean"], stats["feature_std"]).to(device)
     model = build_model(device)
     if not args.random_init:
@@ -168,8 +169,9 @@ def main():
     # Calibrate on normal images
     print(f"\nCalibrating on {len(normal_val)} held-out normal images")
     normal_maps = collect(model, builder, normal_val, device, "normal", with_masks=False)
+    # Scalers fit on pixel values across all normal images
     recon_scaler = RobustScaler.fit(np.concatenate([m["recon"].ravel() for m in normal_maps]))
-    attn_scalers = {
+    attn_scalers = {  # one scaler per attention variant
         v: RobustScaler.fit(np.concatenate([attention_statistic(m, v, N_TOKENS).ravel() for m in normal_maps])) for v in ATTN_VARIANTS
     }
     results["calibration"] = {"recon": recon_scaler.to_dict(), **{f"attn_{v}": s.to_dict() for v, s in attn_scalers.items()}}
@@ -186,8 +188,7 @@ def main():
 
     # Select alpha, attention variant and sign on the val set
     if args.fixed_alpha is not None:
-        selection = {"alpha": args.fixed_alpha, "variant": ATTN_VARIANTS[0], "sign": 1.0,
-                     "val_macro_auroc": None, "note": "alpha fixed on the command line"}
+        selection = {"alpha": args.fixed_alpha, "variant": ATTN_VARIANTS[0], "sign": 1.0, "val_macro_auroc": None, "note": "alpha fixed on the command line"}
     else:
         best = None
         for variant in ATTN_VARIANTS:
@@ -219,7 +220,7 @@ def main():
     results["macro_ap_gain"] = macro_average(results["per_class"], "ap_gain_mean")
 
 
-    # Alpha sensitivity curve (reported, NOT used for selection)
+    # Alpha sensitivity curve (report how results vary with alpha)
     results["alpha_sweep"] = {}
     for a in ALPHA_GRID:
         pc = {}
@@ -238,7 +239,7 @@ def main():
         cls: image_level_auroc(normal_img_scores, np.array([image_score(m) for m in scored[cls]["test"]])) for cls in scored
     }
 
-    # Classical baselines on the same test images
+    # Classical baselines on the same test images (RX and PCA)
     pca = PCAReconstructor(np.array(stats["band_mean"]), np.array(stats["band_cov"]), PCA_COMPONENTS)
     results["baselines"] = {"pca_explained_variance": pca.explained, "rx": {}, "pca": {}}
     for cls in scored:
@@ -257,7 +258,7 @@ def main():
     results["baselines"]["pca_macro_auroc"] = macro_average(results["baselines"]["pca"], "auroc_mean")
 
 
-    # Save score maps for qualitative figures
+    # Save score maps
     if SAVE_MAPS_PER_CLASS:
         maps_dir = ARTIFACTS_DIR / f"maps_{tag}"
         maps_dir.mkdir(parents=True, exist_ok=True)
