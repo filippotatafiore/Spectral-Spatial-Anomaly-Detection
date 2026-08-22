@@ -72,13 +72,24 @@ def training_step(model, builder, images, generator):
     else:
         loss = F.mse_loss(recon, target)
 
-    center_mse = F.mse_loss(recon[:, center], target[:, center]).detach()
-    target_var = target[:, center].float().var().detach()
+    if hidden is not None:
+        # If doing spectral masking only the hidden bands required learning
+        center_mse = F.mse_loss(recon[:, center][:, hidden], target[:, center][:, hidden]).detach()
+        target_var = target[:, center][:, hidden].float().var().detach()
+    else:
+        center_mse = F.mse_loss(recon[:, center], target[:, center]).detach()
+        target_var = target[:, center].float().var().detach()
+
+
     # Naive baseline: predict center pixel as average of its 4 neighbors
     P = PATCH_SIZE
     up, down, left, right = center - P, center + P, center - 1, center + 1
-    naive = (target[:, up] + target[:, down] + target[:, left] + target[:, right]) / 4.0
-    naive_mse = F.mse_loss(naive, target[:, center]).detach()
+    if hidden is not None:
+        naive_mse = target_var.clone()
+    else:
+        naive = (target[:, up] + target[:, down] + target[:, left] + target[:, right]) / 4.0
+        naive_mse = F.mse_loss(naive, target[:, center]).detach()
+
     return loss, center_mse, target_var, naive_mse
 
 

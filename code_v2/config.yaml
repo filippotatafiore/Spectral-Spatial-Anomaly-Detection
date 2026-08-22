@@ -40,7 +40,7 @@ POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
 
 MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
 SPECTRAL_MASK_N: 4            # hide SPECTRAL_MASK_N bands and predict the centre pixel's hidden bands from the visible ones. (0 = off)
-SPECTRAL_MASK_EVAL_GROUPS: 3  # at eval, hide the bands in SPECTRAL_MASK_EVAL_GROUPS disjoint groups so every band is predicted exactly once
+SPECTRAL_MASK_EVAL_GROUPS: 3  # = 12 / SPECTRAL_MASK_N. At eval, hide the bands in SPECTRAL_MASK_EVAL_GROUPS disjoint groups so every band is predicted exactly once
 INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
 
 

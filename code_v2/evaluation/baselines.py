@@ -48,3 +48,41 @@ class PCAReconstructor:
         # Reconstruction error
         resid = flat - self.components @ proj
         return (resid ** 2).mean(axis=0).reshape(h, w).astype(np.float32)
+
+
+class SpectralLinearPredictor:
+    """
+        Predict each band from the other 11 of the same pixel, by least squares on normal training pixels
+        Score = how badly those relations are violated.
+    """
+
+    def __init__(self, band_mean, band_std, train_files, loader, max_files=300, stride=40):
+        self.mean = np.asarray(band_mean, dtype=np.float64)
+        self.std = np.asarray(band_std, dtype=np.float64)
+        n_bands = len(self.mean)
+
+        rows = []
+        for p in train_files[:max_files]:
+            rows.append(self._standardize(loader(p))[::stride])
+        X = np.concatenate(rows, 0)
+
+        self.weights = []
+        for b in range(n_bands):
+            others = [j for j in range(n_bands) if j != b]
+            w, *_ = np.linalg.lstsq(X[:, others], X[:, b], rcond=None)
+            self.weights.append(w)
+        self.n_pixels_fitted = len(X)
+
+    def _standardize(self, img):
+        c = img.shape[0]
+        return (img.reshape(c, -1).T.astype(np.float64) - self.mean) / self.std
+
+    def score(self, image):
+        """image: (C, H, W) raw reflectance -> (H, W) violation of the cross-band model"""
+        c, h, w = image.shape
+        z = self._standardize(image)
+        err = np.zeros(len(z))
+        for b in range(c):
+            others = [j for j in range(c) if j != b]
+            err += (z[:, others] @ self.weights[b] - z[:, b]) ** 2
+        return (err / c).reshape(h, w).astype(np.float32)

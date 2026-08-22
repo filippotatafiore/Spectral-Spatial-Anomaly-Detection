@@ -11,7 +11,7 @@ from data.dataset import _load_image
 
 from evaluation.metrics import per_image_metrics, aggregate, image_level_auroc, macro_average
 from evaluation.scoring import attention_statistic, fuse, RobustScaler, ATTN_VARIANTS, SIGNS
-from evaluation.baselines import PCAReconstructor, rx_score
+from evaluation.baselines import PCAReconstructor, rx_score, SpectralLinearPredictor
 
 from utils.artifacts import load_and_check_stats
 from utils.seed import set_seed
@@ -83,7 +83,7 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
                 feats, _ = builder(raw_m)
                 feats = feats.reshape(-1, N_TOKENS, feats.shape[-1])
                 with torch.autocast("cuda", enabled=use_amp):
-                    o = model(feats, need_attn_stats=(gi == 0))
+                    o = model(feats, need_attn_stats=True)
                 if gi == 0:
                     out = o          # attention statistics from the first pass only
                 d = o["recon"][:, center].float()[:, hidden] - target[:, center].float()[:, hidden]
@@ -263,23 +263,28 @@ def main():
         cls: image_level_auroc(normal_img_scores, np.array([image_score(m) for m in scored[cls]["test"]])) for cls in scored
     }
 
-    # Classical baselines on the same test images (RX and PCA)
+    # Classical baselines on the same test images (RX, PCA, SpectralLinearPredictor)
     pca = PCAReconstructor(np.array(stats["band_mean"]), np.array(stats["band_cov"]), PCA_COMPONENTS)
-    results["baselines"] = {"pca_explained_variance": pca.explained, "rx": {}, "pca": {}}
+    train_files, _ = split_normals()
+    spec = SpectralLinearPredictor(stats["band_mean"], stats["feature_std"][:N_BANDS], train_files, lambda p: _load_image(p, CLIP_REFLECTANCE).numpy())
+    print(f"SpectralLinearPredictor fitted on {spec.n_pixels_fitted:,} normal pixels")
+    results["baselines"] = {"pca_explained_variance": pca.explained, "rx": {}, "pca": {}, "spectral_linear": {}}
     for cls in scored:
-        rx_recs, pca_recs = [], []
+        rx_recs, pca_recs, spec_recs = [], [], []
         for m in scored[cls]["test"]:
             img = _load_image(m["img_path"], CLIP_REFLECTANCE).numpy()
-            for fn, acc in ((rx_score, rx_recs), (pca.score, pca_recs)):
+            for fn, acc in ((rx_score, rx_recs), (pca.score, pca_recs), (spec.score, spec_recs)):
                 r = per_image_metrics(fn(img), m["mask"])
                 if r is not None:
                     acc.append(r)
 
         results["baselines"]["rx"][cls] = aggregate(rx_recs)
         results["baselines"]["pca"][cls] = aggregate(pca_recs)
+        results["baselines"]["spectral_linear"][cls] = aggregate(spec_recs)
 
     results["baselines"]["rx_macro_auroc"] = macro_average(results["baselines"]["rx"], "auroc_mean")
     results["baselines"]["pca_macro_auroc"] = macro_average(results["baselines"]["pca"], "auroc_mean")
+    results["baselines"]["spectral_linear_macro_auroc"] = macro_average(results["baselines"]["spectral_linear"], "auroc_mean")
 
 
     # Save score maps
@@ -315,7 +320,8 @@ def main():
     print("-" * 92)
     print(f"macro AUROC (over classes): model {results['macro_auroc']:.4f} | "
           f"RX {results['baselines']['rx_macro_auroc']:.4f} | "
-          f"PCA {results['baselines']['pca_macro_auroc']:.4f}")
+          f"PCA {results['baselines']['pca_macro_auroc']:.4f} | "
+          f"SpectralLinear {results['baselines']['spectral_linear_macro_auroc']:.4f}")
     print(f"selection: alpha={alpha} variant={variant} sign={sign:+.0f}")
     print(f"wrote {out_path}")
     print("=" * 92)
