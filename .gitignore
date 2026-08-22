@@ -5,4 +5,5 @@ Sentinel2_anomaly_detection/**
 prova.py
 test_preprocessing.py
 artifacts/
+ssad_results.md
 __pycache__/
