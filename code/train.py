@@ -253,6 +253,7 @@ def main():
             best_val, best_epoch = val_loss, epoch
             bad_epochs = 0
             torch.save({"model": model.state_dict(), "epoch": epoch, "val_loss": val_loss,
+                        "variance_explained": var_explained,   # identity mapping diagnostic
                         "mask_center": MASK_CENTER, "config_feature_dim": FEATURE_DIM}, best_model_path)
         else:
             bad_epochs += 1
@@ -283,6 +284,7 @@ def main():
                 "scheduler": scheduler.state_dict(),
                 "scaler": scaler.state_dict(),
                 "epoch": epoch, "step": step, "best_val": best_val, "val_loss": val_loss,
+                "variance_explained": var_explained,
                 "torch_rng": torch.get_rng_state(),
                 "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
                 "center_generator": generator.get_state(),

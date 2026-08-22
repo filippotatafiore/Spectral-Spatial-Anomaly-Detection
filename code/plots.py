@@ -4,11 +4,12 @@
     python plots.py --evaluation    # evaluation figures only
 
     Reads only json/npz files.
-    Figures are saved in artifacts/ssad_<version>_results/figures/ .
+    Figures are saved in artifacts/ssad_<version>_<run>_results/figures/ .
 """
 
 # version of the model used to generate the artifacts
 MODEL_VERSION = "v1"
+MODEL_RUN = "0"
 
 
 import argparse
@@ -31,7 +32,7 @@ def _artifacts_dir():
     d = Path(cfg.get("artifacts_dir", "artifacts"))
     return d if d.is_absolute() else (here / d).resolve()
 
-MODEL_ARTIFACTS_DIR = _artifacts_dir() / f"ssad_{MODEL_VERSION}_results"
+MODEL_ARTIFACTS_DIR = _artifacts_dir() / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results"
 FIG_DIR = MODEL_ARTIFACTS_DIR / "figures"
 
 

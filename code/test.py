@@ -128,6 +128,7 @@ def main():
     ap.add_argument("-o", "--out", default=None, help="results json (default artifacts/results_<tag>.json)")
     ap.add_argument("--random-init", action="store_true", help="skip loading weights: the untrained control row")
     ap.add_argument("--fixed-alpha", type=float, default=None, help="skip selection (1.0 = recon only, 0.0 = attention only)")
+    ap.add_argument("--ckpt-sweep", action="store_true", help="score every artifacts/epoch_*.pt on the val split and report the curve")
     args = ap.parse_args()
 
     set_seed(SEED)
@@ -263,7 +264,8 @@ def main():
         maps_dir = ARTIFACTS_DIR / f"maps_{tag}"
         maps_dir.mkdir(parents=True, exist_ok=True)
         for cls in scored:
-            for m in scored[cls]["test"][:SAVE_MAPS_PER_CLASS]:
+            usable = [m for m in scored[cls]["test"] if 0 < m["mask"].mean() < 1] or scored[cls]["test"]
+            for m in usable[:SAVE_MAPS_PER_CLASS]:
                 np.savez_compressed(
                     maps_dir / f"{cls}_{m['name']}.npz",
                     fused=fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign),
@@ -294,6 +296,41 @@ def main():
     print(f"selection: alpha={alpha} variant={variant} sign={sign:+.0f}")
     print(f"wrote {out_path}")
     print("=" * 92)
+
+
+    # checkpoint sweep
+    if args.ckpt_sweep:
+        ckpts = sorted(ARTIFACTS_DIR.glob("epoch_*.pt"))
+        if not ckpts:
+            print("\n(no epoch_*.pt checkpoints found; nothing to sweep)")
+            return
+
+        print("\n" + "=" * 60)
+        print("CHECKPOINT SWEEP  (scored on the anomalous VAL split)")
+        print(f"{'checkpoint':<18}{'macro AUROC':>14}")
+        print("-" * 60)
+        sweep = {}
+        for cp in ckpts:
+            state = torch.load(cp, map_location=device, weights_only=False)
+            model.load_state_dict(state["model"])
+            model.eval()
+            per_class = {}
+            for cls in TEST_CLASSES:
+                items = subsample(splits[cls]["val"], MAX_IMAGES_PER_CLASS)
+                maps = collect(model, builder, items, device, f"sweep/{cls}", with_masks=True)
+                recs = evaluate(maps, alpha, recon_scaler, attn_scaler, variant, sign)
+                if recs:
+                    per_class[cls] = aggregate(recs)
+            score = macro_average(per_class, "auroc_mean", exclude=SELECTION_EXCLUDE)
+            sweep[cp.name] = score
+            print(f"{cp.name:<18}{score:>14.4f}", flush=True)
+        best_cp = max(sweep, key=sweep.get)
+        print("-" * 60)
+        print(f"best on val: {best_cp}  ({sweep[best_cp]:.4f})")
+        print("=" * 60)
+
+        with open(ARTIFACTS_DIR / f"ckpt_sweep_{tag}.json", "w") as fh:
+            json.dump({"sweep": sweep, "best": best_cp, "selection": selection}, fh, indent=2)
 
 
 if __name__ == "__main__":

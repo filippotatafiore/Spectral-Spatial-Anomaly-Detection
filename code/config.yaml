@@ -38,7 +38,7 @@ DECODER_HIDDEN: 128           # decoder MLP hidden width
 
 POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
 
-MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
+MASK_CENTER: true             # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
 INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
 
 
@@ -60,7 +60,7 @@ SOURCE_BALANCE_POWER: 0.0   # dataset unbalanced -> oversample rare training sou
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 VAL_SEED: 12345             # random seed for centers used for the validation loss
 
-LOSS_TOKENS: "all"          # "all" or "center": which tokens to compute the loss on
+LOSS_TOKENS: "center"       # "all" or "center": which tokens to compute the loss on
 
 EARLY_STOP_PATIENCE: 999    # early stopping patience (in epochs) for validation loss
 LOG_EVERY: 50               # for each epoch, print every LOG_EVERY steps
