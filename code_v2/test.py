@@ -8,8 +8,8 @@ from network.transformer_ae import SpectralSpatialTransformerAE
 
 from data.transforms import FeatureBuilder, center_token_index, extract_patches, iter_all_centers
 from data.dataset import _load_image
-
-from evaluation.metrics import per_image_metrics, aggregate, image_level_auroc, macro_average
+from evaluation.metrics import (per_image_metrics, aggregate, image_level_auroc, macro_average,
+                                operating_point_metrics, detection_at_operating_point, threshold_at_fpr, roc_3d)
 from evaluation.scoring import attention_statistic, fuse, RobustScaler, ATTN_VARIANTS, SIGNS
 from evaluation.baselines import PCAReconstructor, rx_score, SpectralLinearPredictor
 
@@ -19,7 +19,7 @@ from utils.splits import split_eval, split_fingerprint, split_normals, subsample
 
 
 from utils.globals import (
-    ALPHA_GRID, ARTIFACTS_DIR, CHUNK_PIXELS, CLIP_REFLECTANCE, DECODER_HIDDEN, D_MODEL,
+    ALPHA_GRID, OP_TARGET_FPR, ARTIFACTS_DIR, CHUNK_PIXELS, CLIP_REFLECTANCE, DECODER_HIDDEN, D_MODEL,
     DROPOUT, EMBED_HIDDEN, FEATURE_DIM, FFN_HIDDEN, MASK_CENTER, MAX_IMAGES_PER_CLASS,
     MAX_NORMAL_CALIB_IMAGES, N_BANDS, N_DCT_COEFFS, N_HEADS, N_LAYERS, N_TOKENS,
     PATCH_SIZE, PCA_COMPONENTS, POS_ENCODING, SAVE_MAPS_PER_CLASS, SEED,
@@ -134,12 +134,18 @@ def fused_scores(maps, alpha, recon_scaler, attn_scaler, variant, sign):
     return fuse(maps["recon"], attn, alpha, recon_scaler, attn_scaler, sign)  # Anomaly Score
 
 
-def evaluate(maps_list, alpha, recon_scaler, attn_scaler, variant, sign):
+def evaluate(maps_list, alpha, recon_scaler, attn_scaler, variant, sign, with_3d_roc=False):
     records = []
     for m in maps_list:
         s = fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign)
         r = per_image_metrics(s, m["mask"])
         if r is not None:
+            if with_3d_roc:
+                # only on the final test pass: 200 threshold steps per image is slow,
+                # and it is pointless during the alpha search
+                r3 = roc_3d(m["mask"], s)
+                if r3:
+                    r.update(r3)
             records.append(r)
     return records
 
@@ -235,11 +241,25 @@ def main():
     attn_scaler = attn_scalers[variant]
 
 
+    # pixel-level decision threshold chosen on normal data only
+    normal_pixel_scores = np.concatenate([
+        fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign).ravel()
+        for m in normal_maps])
+    pixel_threshold = threshold_at_fpr(normal_pixel_scores, OP_TARGET_FPR)
+    results["pixel_threshold"] = {"value": pixel_threshold, "target_fpr": OP_TARGET_FPR}
+    print(f"pixel threshold at {OP_TARGET_FPR:.0%} FPR on normals: {pixel_threshold:.4f}")
+
     # Report on test set
     results["per_class"] = {}
     for cls in scored:
-        recs = evaluate(scored[cls]["test"], alpha, recon_scaler, attn_scaler, variant, sign)
-        results["per_class"][cls] = {**aggregate(recs), "n_skipped_single_class": len(scored[cls]["test"]) - len(recs)}
+        recs = evaluate(scored[cls]["test"], alpha, recon_scaler, attn_scaler, variant, sign, with_3d_roc=True)
+        ops = []
+        for m in scored[cls]["test"]:
+            if 0 < m["mask"].mean() < 1:
+                s = fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign)
+                ops.append(operating_point_metrics(s, m["mask"], pixel_threshold))
+        op_mean = {k: float(np.mean([o[k] for o in ops])) for k in ops[0]} if ops else {}
+        results["per_class"][cls] = {**aggregate(recs), **op_mean, "n_skipped_single_class": len(scored[cls]["test"]) - len(recs)}
     results["macro_auroc"] = macro_average(results["per_class"], "auroc_mean")
     results["macro_ap_gain"] = macro_average(results["per_class"], "ap_gain_mean")
 
@@ -274,10 +294,25 @@ def main():
     print(f"image-level alpha selected on VAL: {img_alpha} (pixel-level uses {alpha})")
 
     normal_img_scores = np.array([image_score(m, img_alpha, attn_scaler) for m in normal_maps])
+
+
     results["image_level_auroc"] = {
         cls: image_level_auroc(normal_img_scores, np.array([image_score(m, img_alpha, attn_scaler) for m in scored[cls]["test"]]))
         for cls in scored
     }
+
+    # Compute number of anomalous images detected at a fixed threshold, and false alarms on normal images.
+    img_threshold = threshold_at_fpr(normal_img_scores, OP_TARGET_FPR)
+    results["image_threshold"] = {"value": img_threshold, "target_fpr": OP_TARGET_FPR}
+    results["image_level_detection"] = {
+        cls: detection_at_operating_point(
+            normal_img_scores,
+            np.array([image_score(m, img_alpha, attn_scaler) for m in scored[cls]["test"]]),
+            img_threshold)
+        for cls in scored
+    }
+
+
     # sensitivity curve, reported not used for selection
     results["image_level_alpha_sweep"] = {}
     for a in ALPHA_GRID:
@@ -318,9 +353,11 @@ def main():
         for cls in scored:
             usable = [m for m in scored[cls]["test"] if 0 < m["mask"].mean() < 1] or scored[cls]["test"]
             for m in usable[:SAVE_MAPS_PER_CLASS]:
+                _s = fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign)
                 np.savez_compressed(
                     maps_dir / f"{cls}_{m['name']}.npz",
-                    fused=fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign),
+                    fused=_s,
+                    pred_mask=(_s >= pixel_threshold).astype(np.uint8),
                     recon=m["recon"], entropy=m["center_entropy"],
                     received=m["center_received"], mask=m["mask"],
                 )
@@ -332,15 +369,21 @@ def main():
     # Print the table
     print("\n" + "=" * 92)
     print(f"{'class':<13}{'n':>5}{'skip':>6}{'base':>8}{'AUROC':>17}{'AP':>9}{'AP/base':>9}"
-          f"{'imgAUROC':>10}{'RX':>8}{'PCA':>8}")
+          f"{'imgAUROC':>10}{'detRate':>9}{'opF1':>8}{'trivF1':>8}{'RX':>8}{'PCA':>8}")
     print("-" * 92)
     for cls, m in results["per_class"].items():
         print(f"{cls:<13}{m['n_images']:>5}{m['n_skipped_single_class']:>6}"
               f"{m['base_rate_mean']:>8.3f}{m['auroc_mean']:>11.4f}+-{m['auroc_std']:<4.3f}"
               f"{m['ap_mean']:>9.4f}{m['ap_gain_mean']:>9.2f}"
+
               f"{results['image_level_auroc'][cls]:>10.4f}"
+              f"{results['image_level_detection'][cls]['detection_rate']:>9.3f}"
+              f"{m.get('op_f1', float('nan')):>8.3f}"
+              f"{m.get('trivial_f1', float('nan')):>8.3f}"
               f"{results['baselines']['rx'][cls]['auroc_mean']:>8.4f}"
               f"{results['baselines']['pca'][cls]['auroc_mean']:>8.4f}")
+
+        
     print("-" * 92)
     print(f"macro AUROC (over classes): model {results['macro_auroc']:.4f} | "
           f"RX {results['baselines']['rx_macro_auroc']:.4f} | "

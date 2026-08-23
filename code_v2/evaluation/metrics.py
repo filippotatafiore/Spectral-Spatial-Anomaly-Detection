@@ -115,7 +115,10 @@ def aggregate(records):
     if not records:
         return {"n_images": 0}
     out = {"n_images": len(records)}
-    for k in ("auroc", "ap", "ap_gain", "best_f1", "iou_at_best_f1", "base_rate"):
+    for k in ("auroc", "ap", "ap_gain", "best_f1", "iou_at_best_f1", "base_rate",
+              "auc_df", "auc_dtau", "auc_ftau", "auc_td", "auc_bs", "auc_odp", "auc_snpr"):
+        if k not in records[0]:
+            continue
         v = np.array([r[k] for r in records], dtype=np.float64)
         out[f"{k}_mean"] = float(v.mean())
         out[f"{k}_std"] = float(v.std(ddof=1)) if len(v) > 1 else 0.0
@@ -137,3 +140,87 @@ def macro_average(per_class, key, exclude=()):
     """
     vals = [m[key] for c, m in per_class.items() if key in m and c not in exclude]
     return float(np.mean(vals)) if vals else float("nan")
+
+
+def operating_point_metrics(score, mask, threshold):
+    """
+        Metrics at a fixed threshold.
+    """
+    y = mask.ravel().astype(np.int8)
+    pred = (score.ravel() >= threshold).astype(np.int8)
+    tp = int((pred & (y == 1)).sum()); fp = int((pred & (y == 0)).sum())
+    fn = int(((1 - pred) & (y == 1)).sum()); tn = int(((1 - pred) & (y == 0)).sum())
+    prec = tp / max(tp + fp, 1); rec = tp / max(tp + fn, 1)
+    base = float(y.mean())
+    return {
+        "op_precision": prec,
+        "op_recall": rec,
+        "op_f1": 2 * prec * rec / max(prec + rec, 1e-12),
+        "op_iou": tp / max(tp + fp + fn, 1),
+        "op_fpr": fp / max(fp + tn, 1),
+        "trivial_f1": 2 * base / (1 + base),
+        "trivial_iou": base,
+    }
+
+
+def detection_at_operating_point(normal_scores, anomalous_scores, threshold):
+    """
+        Number of anomalous images detected at a fixed threshold, and false alarms on normal images.
+    """
+    a = np.asarray(anomalous_scores); n = np.asarray(normal_scores)
+    tp = int((a >= threshold).sum()); fp = int((n >= threshold).sum())
+    prec = tp / max(tp + fp, 1); rec = tp / max(len(a), 1)
+    return {
+        "detection_rate": rec,                    # recall over anomalous scenes
+        "false_alarm_rate": fp / max(len(n), 1),
+        "precision": prec,
+        "f1": 2 * prec * rec / max(prec + rec, 1e-12),
+        "n_anomalous": int(len(a)), "n_normal": int(len(n)),
+    }
+
+
+def threshold_at_fpr(normal_scores, target_fpr):
+    """
+        Choose the decision threshold using normal data only.
+    """
+    return float(np.quantile(np.asarray(normal_scores), 1.0 - target_fpr))
+
+
+def roc_3d(y_true, y_score, n_tau=200):
+    """
+        3D ROC analysis. Sweeps a normalised threshold tau over [0,1].
+
+          AUC_(D,F)    area under (Pd, Pf)   = ordinary AUROC, detection accuracy
+          AUC_(D,tau)  area under (Pd, tau)  = target detectability
+          AUC_(F,tau)  area under (Pf, tau)  = background suppression, LOWER is better
+
+          AUC_TD   = AUC_(D,F) + AUC_(D,tau)
+          AUC_BS   = AUC_(D,F) - AUC_(F,tau)
+          AUC_ODP  = AUC_(D,tau) + (1 - AUC_(F,tau))
+          AUC_SNPR = AUC_(D,tau) / AUC_(F,tau)
+    """
+    y = np.asarray(y_true).ravel().astype(np.int8)
+    s = np.asarray(y_score, dtype=np.float64).ravel()
+    if y.sum() == 0 or y.sum() == y.size:
+        return None
+    lo, hi = s.min(), s.max()
+    s = (s - lo) / (hi - lo) if hi > lo else np.zeros_like(s)
+
+    taus = np.linspace(0.0, 1.0, n_tau)
+    pos, neg = s[y == 1], s[y == 0]
+    pd = np.array([(pos >= t).mean() for t in taus])
+    pf = np.array([(neg >= t).mean() for t in taus])
+
+    trap = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    auc_df = float(trap(pd[::-1], pf[::-1]))
+    auc_dtau = float(trap(pd, taus))
+    auc_ftau = float(trap(pf, taus))
+    return {
+        "auc_df": auc_df,
+        "auc_dtau": auc_dtau,
+        "auc_ftau": auc_ftau,
+        "auc_td": auc_df + auc_dtau,
+        "auc_bs": auc_df - auc_ftau,
+        "auc_odp": auc_dtau + (1.0 - auc_ftau),
+        "auc_snpr": auc_dtau / max(auc_ftau, 1e-12),
+    }

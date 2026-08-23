@@ -39,8 +39,8 @@ DECODER_HIDDEN: 128           # decoder MLP hidden width
 POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
 
 MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
-SPECTRAL_MASK_N: 4            # hide SPECTRAL_MASK_N bands and predict the centre pixel's hidden bands from the visible ones. (0 = off)
-SPECTRAL_MASK_EVAL_GROUPS: 3  # = 12 / SPECTRAL_MASK_N. At eval, hide the bands in SPECTRAL_MASK_EVAL_GROUPS disjoint groups so every band is predicted exactly once
+SPECTRAL_MASK_N: 6            # hide SPECTRAL_MASK_N bands and predict the centre pixel's hidden bands from the visible ones. (0 = off)
+SPECTRAL_MASK_EVAL_GROUPS: 2  # = 12 / SPECTRAL_MASK_N. At eval, hide the bands in SPECTRAL_MASK_EVAL_GROUPS disjoint groups so every band is predicted exactly once
 INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
 
 
@@ -75,6 +75,8 @@ MAX_IMAGES_PER_CLASS: 250                                             # maximum 
 MAX_NORMAL_CALIB_IMAGES: 200                                          # maximum number of held-out normal images to use to calibrate the score scales
 
 ALPHA_GRID: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]   # grid of alpha values
+OP_TARGET_FPR: 0.05                                                   # false-alarm rate used to pick the decision threshold on normal data.
+                                                                      # Turns the continuous score into a binary mask and gives the image-level detection rate
 
 SELECTION_EXCLUDE: ["floods"]                                         # excluded from alpha/variant selection (floods has 3 val images)
 SAVE_MAPS_PER_CLASS: 4                                                # score maps saved per class for qualitative figures
