@@ -9,7 +9,7 @@
 
 # version of the model used to generate the artifacts
 MODEL_VERSION = "v2"
-MODEL_RUN = "0"
+MODEL_RUN = "1"
 
 
 import argparse
@@ -194,6 +194,94 @@ def plot_qualitative(maps_dir, n_per_class=2, tag=""):
 
 
 
+def plot_operating_point(results, tag=""):
+    """
+        F1 and IoU at the operating point
+    """
+    classes = [c for c in results["per_class"] if "op_f1" in results["per_class"][c]]
+    if not classes:
+        return
+    x = np.arange(len(classes)); w = 0.2
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+    g = lambda k: [results["per_class"][c][k] for c in classes]
+    ax.bar(x - 1.5 * w, g("op_f1"), w, label="F1 @ operating point", color="#264653")
+    ax.bar(x - 0.5 * w, g("trivial_f1"), w, label="F1, label-all-anomalous", color="#adb5bd")
+    ax.bar(x + 0.5 * w, g("op_iou"), w, label="IoU @ operating point", color="#2a9d8f")
+    ax.bar(x + 1.5 * w, g("trivial_iou"), w, label="IoU, label-all-anomalous", color="#d9d9d9")
+    ax.set_xticks(x); ax.set_xticklabels(classes)
+    ax.set_ylabel("score"); ax.set_ylim(0, 1.05)
+    thr = results.get("pixel_threshold", {})
+    ax.set_title(f"Operating point (threshold at {thr.get('target_fpr', 0.05):.0%} FPR on normals)")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3, axis="y")
+    _save(fig, f"11_operating_point{tag}")
+
+
+def plot_detection(results, tag=""):
+    """
+        Image-level detection rate and precision at the operating point.
+    """
+    det = results.get("image_level_detection")
+    if not det:
+        return
+    classes = list(det.keys())
+    x = np.arange(len(classes)); w = 0.26
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+    ax.bar(x - w, [det[c]["detection_rate"] for c in classes], w,
+           label="detection rate (recall)", color="#264653")
+    ax.bar(x, [det[c]["precision"] for c in classes], w, label="precision", color="#e9c46a")
+    ax.bar(x + w, [results["image_level_auroc"][c] for c in classes], w,
+           label="image AUROC", color="#8ecae6")
+    far = det[classes[0]]["false_alarm_rate"]
+    ax.axhline(0.5, ls="--", c="k", lw=1)
+    ax.set_xticks(x); ax.set_xticklabels(classes)
+    ax.set_ylabel("score"); ax.set_ylim(0, 1.05)
+    ax.set_title(f"Image-level detection at {far:.0%} false-alarm rate")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3, axis="y")
+    _save(fig, f"12_image_detection{tag}")
+
+
+def plot_per_band(summary):
+    """
+        MSE at the center pixel of the patch, for each band (per-band reconstruction difficulty)
+    """
+    hist = summary["history"]
+    pb = [h.get("per_band_center_mse") for h in hist if h.get("per_band_center_mse")]
+    if not pb:
+        return
+    names = summary.get("config", {}).get("BANDS") or [f"b{i}" for i in range(len(pb[-1]))]
+    fig, ax = plt.subplots(figsize=(7.5, 3.6))
+    ax.bar(np.arange(len(pb[-1])), pb[-1], color="#264653")
+    ax.set_xticks(np.arange(len(names))); ax.set_xticklabels(names, rotation=45, ha="right")
+    ax.set_ylabel("val MSE at the centre pixel"); ax.set_yscale("log")
+    ax.set_title("Per-band reconstruction difficulty (final epoch)")
+    ax.grid(alpha=0.3, axis="y")
+    _save(fig, "13_per_band_error")
+
+
+def plot_3d_roc(results, tag=""):
+    """
+        3D-ROC derived measures
+    """
+    classes = [c for c in results["per_class"] if "auc_bs_mean" in results["per_class"][c]]
+    if not classes:
+        return
+    x = np.arange(len(classes)); w = 0.26
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4))
+    g = lambda k: [results["per_class"][c][k] for c in classes]
+    a1.bar(x - w, g("auc_df_mean"), w, label=r"AUC$_{(D,F)}$", color="#264653")
+    a1.bar(x, g("auc_dtau_mean"), w, label=r"AUC$_{(D,\tau)}$", color="#2a9d8f")
+    a1.bar(x + w, g("auc_ftau_mean"), w, label=r"AUC$_{(F,\tau)}$ (lower better)", color="#e76f51")
+    a1.set_xticks(x); a1.set_xticklabels(classes, rotation=20)
+    a1.set_ylabel("AUC"); a1.set_title("3D ROC: the three basic AUCs")
+    a1.legend(fontsize=8); a1.grid(alpha=0.3, axis="y")
+    a2.bar(x - w / 2, g("auc_bs_mean"), w, label=r"AUC$_{BS}$", color="#264653")
+    a2.bar(x + w / 2, g("auc_snpr_mean"), w, label=r"AUC$_{SNPR}$", color="#e9c46a")
+    a2.set_xticks(x); a2.set_xticklabels(classes, rotation=20)
+    a2.set_title("Derived measures"); a2.legend(fontsize=8); a2.grid(alpha=0.3, axis="y")
+    _save(fig, f"14_3d_roc{tag}")
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--training", action="store_true")
@@ -205,7 +293,9 @@ def main():
         p = MODEL_ARTIFACTS_DIR / "train_summary.json"
         if p.exists():
             print(f"Training figures from {p}")
-            plot_training(json.load(open(p)))
+            summary = json.load(open(p))
+            plot_training(summary)
+            plot_per_band(summary)
         else:
             print(f"  (no {p}, skipping training figures)")
 
@@ -213,7 +303,11 @@ def main():
         for p in sorted(MODEL_ARTIFACTS_DIR.glob("results_*.json")):
             tag = "_" + p.stem[len("results_"):]
             print(f"Evaluation figures from {p}")
-            plot_evaluation(json.load(open(p)), tag=tag)
+            res = json.load(open(p))
+            plot_evaluation(res, tag=tag)
+            plot_operating_point(res, tag=tag)
+            plot_detection(res, tag=tag)
+            plot_3d_roc(res, tag=tag)
 
         for d in sorted(MODEL_ARTIFACTS_DIR.glob("maps_*")):
             if d.is_dir():
