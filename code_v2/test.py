@@ -255,13 +255,37 @@ def main():
         results["alpha_sweep"][str(a)] = macro_average(pc, "auroc_mean")
 
     # Image-level detection
-    def image_score(m):
-        return float(np.percentile(fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign), 99))
+    def image_score(m, a, sc):
+        return float(np.percentile(fused_scores(m, a, recon_scaler, sc, variant, sign), 99))
 
-    normal_img_scores = np.array([image_score(m) for m in normal_maps])
+    img_best = None
+    for a in ALPHA_GRID:
+        norm_v = np.array([image_score(m, a, attn_scaler) for m in normal_maps])
+        per_cls = {}
+        for cls in scored:
+            anom_v = np.array([image_score(m, a, attn_scaler) for m in scored[cls]["val"]])
+            if len(anom_v):
+                per_cls[cls] = {"auroc_mean": image_level_auroc(norm_v, anom_v)}
+        s = macro_average(per_cls, "auroc_mean", exclude=SELECTION_EXCLUDE)
+        if img_best is None or s > img_best[1]:
+            img_best = (a, s)
+    img_alpha = img_best[0]
+    results["image_level_selection"] = {"alpha": img_alpha, "val_macro_auroc": img_best[1], "pixel_level_alpha": alpha}
+    print(f"image-level alpha selected on VAL: {img_alpha} (pixel-level uses {alpha})")
+
+    normal_img_scores = np.array([image_score(m, img_alpha, attn_scaler) for m in normal_maps])
     results["image_level_auroc"] = {
-        cls: image_level_auroc(normal_img_scores, np.array([image_score(m) for m in scored[cls]["test"]])) for cls in scored
+        cls: image_level_auroc(normal_img_scores, np.array([image_score(m, img_alpha, attn_scaler) for m in scored[cls]["test"]]))
+        for cls in scored
     }
+    # sensitivity curve, reported not used for selection
+    results["image_level_alpha_sweep"] = {}
+    for a in ALPHA_GRID:
+        nv = np.array([image_score(m, a, attn_scaler) for m in normal_maps])
+        pc = {cls: {"auroc_mean": image_level_auroc(
+                        nv, np.array([image_score(m, a, attn_scaler) for m in scored[cls]["test"]]))}
+              for cls in scored}
+        results["image_level_alpha_sweep"][str(a)] = macro_average(pc, "auroc_mean")
 
     # Classical baselines on the same test images (RX, PCA, SpectralLinearPredictor)
     pca = PCAReconstructor(np.array(stats["band_mean"]), np.array(stats["band_cov"]), PCA_COMPONENTS)

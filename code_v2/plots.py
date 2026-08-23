@@ -8,8 +8,8 @@
 """
 
 # version of the model used to generate the artifacts
-MODEL_VERSION = "v1"
-MODEL_RUN = "1"
+MODEL_VERSION = "v2"
+MODEL_RUN = "0"
 
 
 import argparse

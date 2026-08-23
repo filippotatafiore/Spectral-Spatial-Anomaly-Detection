@@ -80,6 +80,9 @@ def training_step(model, builder, images, generator):
         center_mse = F.mse_loss(recon[:, center], target[:, center]).detach()
         target_var = target[:, center].float().var().detach()
 
+    # Per-band error
+    per_band_mse = ((recon[:, center] - target[:, center]) ** 2).mean(0).detach()
+
 
     # Naive baseline: predict center pixel as average of its 4 neighbors
     P = PATCH_SIZE
@@ -90,7 +93,7 @@ def training_step(model, builder, images, generator):
         naive = (target[:, up] + target[:, down] + target[:, left] + target[:, right]) / 4.0
         naive_mse = F.mse_loss(naive, target[:, center]).detach()
 
-    return loss, center_mse, target_var, naive_mse
+    return loss, center_mse, target_var, naive_mse, per_band_mse
 
 
 @torch.no_grad()
@@ -104,9 +107,11 @@ def evaluate_loss(model, builder, loader, device, val_seed=VAL_SEED):
     generator.manual_seed(val_seed)
 
     total, total_center, total_var, total_naive, count = 0.0, 0.0, 0.0, 0.0, 0
+    last_per_band = None
     for images in loader:
         images = images.to(device, non_blocking=True)
-        loss, center_mse, target_var, naive_mse = training_step(model, builder, images, generator)
+        loss, center_mse, target_var, naive_mse, per_band_mse = training_step(model, builder, images, generator)
+        last_per_band = per_band_mse
         n = images.shape[0]
         total += float(loss) * n
         total_center += float(center_mse) * n
@@ -121,7 +126,7 @@ def evaluate_loss(model, builder, loader, device, val_seed=VAL_SEED):
     val_target_var = total_var / count
     variance_explained = 1.0 - val_center_mse / max(val_target_var, 1e-12)
     naive_ve = 1.0 - (total_naive / count) / max(val_target_var, 1e-12)
-    return val_loss, val_center_mse, val_target_var, variance_explained, naive_ve
+    return val_loss, val_center_mse, val_target_var, variance_explained, naive_ve, (last_per_band.cpu().tolist() if last_per_band is not None else None)
 
 
 def cosine_schedule(step, warmup, total):
@@ -226,7 +231,7 @@ def main():
             images = images.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast("cuda", enabled=use_amp):
-                loss, center_mse, target_var, _ = training_step(model, builder, images, generator)
+                loss, center_mse, target_var, _, _ = training_step(model, builder, images, generator)
             scaler.scale(loss).backward()
             if GRAD_CLIP:
                 scaler.unscale_(optimizer)
@@ -255,7 +260,7 @@ def main():
                 running, running_n = 0.0, 0
 
         # Validation loss
-        val_loss, val_center_mse, val_target_var, var_explained, naive_ve = evaluate_loss(model, builder, val_loader, device)
+        val_loss, val_center_mse, val_target_var, var_explained, naive_ve, per_band = evaluate_loss(model, builder, val_loader, device)
         epoch_time = time.time() - t0
         peak_mem = torch.cuda.max_memory_allocated() / 1024**3 if device.type == "cuda" else 0.0
         train_loss = epoch_loss_sum / max(epoch_n, 1)
@@ -269,6 +274,7 @@ def main():
             "val_target_var": val_target_var,
             "variance_explained": var_explained,
             "naive_variance_explained": naive_ve,
+            "per_band_center_mse": per_band,
             "beats_naive": bool(var_explained > naive_ve),
             "lr": scheduler.get_last_lr()[0],
             "grad_norm": grad_norm,
