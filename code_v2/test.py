@@ -19,7 +19,7 @@ from utils.splits import split_eval, split_fingerprint, split_normals, subsample
 
 
 from utils.globals import (
-    ALPHA_GRID, OP_TARGET_FPR, ARTIFACTS_DIR, CHUNK_PIXELS, CLIP_REFLECTANCE, DECODER_HIDDEN, D_MODEL,
+    ALPHA_GRID, OP_FPR_GRID, OP_TARGET_FPR, ARTIFACTS_DIR, CHUNK_PIXELS, CLIP_REFLECTANCE, DECODER_HIDDEN, D_MODEL,
     DROPOUT, EMBED_HIDDEN, FEATURE_DIM, FFN_HIDDEN, MASK_CENTER, MAX_IMAGES_PER_CLASS,
     MAX_NORMAL_CALIB_IMAGES, N_BANDS, N_DCT_COEFFS, N_HEADS, N_LAYERS, N_TOKENS,
     PATCH_SIZE, PCA_COMPONENTS, POS_ENCODING, SAVE_MAPS_PER_CLASS, SEED,
@@ -158,6 +158,7 @@ def main():
     ap.add_argument("--random-init", action="store_true", help="skip loading weights: the untrained control row")
     ap.add_argument("--fixed-alpha", type=float, default=None, help="skip selection (1.0 = recon only, 0.0 = attention only)")
     ap.add_argument("--ckpt-sweep", action="store_true", help="score every artifacts/epoch_*.pt on the val split and report the curve")
+    ap.add_argument("--use-best-sweep-ckpt", action="store_true", help="pick the checkpoint by val detection AUROC instead of by val loss")
     args = ap.parse_args()
 
     set_seed(SEED)
@@ -173,6 +174,15 @@ def main():
     model = build_model(device)
     if not args.random_init:
         ckpt_path = args.ckpt or (ARTIFACTS_DIR / "best.pt")
+        if args.use_best_sweep_ckpt and args.ckpt is None:
+            sweep_file = ARTIFACTS_DIR / f"ckpt_sweep_{tag}.json"
+            if sweep_file.exists():
+                sw = json.load(open(sweep_file))
+                ckpt_path = ARTIFACTS_DIR / sw["best"]
+                print(f"using the sweep-selected checkpoint: {sw['best']} "
+                      f"(val macro AUROC {sw['sweep'][sw['best']]:.4f})")
+            else:
+                print(f"(no {sweep_file.name}; run --ckpt-sweep first, falling back to best.pt)")
         ck = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ck["model"])
         print(f"Loaded {ckpt_path} (epoch {ck['epoch']}, val_loss {ck['val_loss']:.6f})")
@@ -241,26 +251,58 @@ def main():
     attn_scaler = attn_scalers[variant]
 
 
-    # pixel-level decision threshold chosen on normal data only
+    def _standardize_map(s):  # standardize a single map
+        med = np.median(s)
+        mad = np.median(np.abs(s - med))
+        return (s - med) / max(1.4826 * mad, 1e-8)
+
     normal_pixel_scores = np.concatenate([
-        fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign).ravel()
+        _standardize_map(fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign)).ravel()
         for m in normal_maps])
-    pixel_threshold = threshold_at_fpr(normal_pixel_scores, OP_TARGET_FPR)
-    results["pixel_threshold"] = {"value": pixel_threshold, "target_fpr": OP_TARGET_FPR}
-    print(f"pixel threshold at {OP_TARGET_FPR:.0%} FPR on normals: {pixel_threshold:.4f}")
+
+    # One FPR per class, selected on validation set
+    pixel_thresholds = {}
+    for cls in scored:
+        best = None
+        for f in OP_FPR_GRID:
+            thr = threshold_at_fpr(normal_pixel_scores, f)
+            f1s = []
+            for m in scored[cls]["val"]:
+                if 0 < m["mask"].mean() < 1:
+                    s = _standardize_map(fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign))
+                    f1s.append(operating_point_metrics(s, m["mask"], thr)["op_f1"])
+            if f1s and (best is None or np.mean(f1s) > best[2]):
+                best = (f, thr, float(np.mean(f1s)))
+        if best is None:
+            best = (OP_TARGET_FPR, threshold_at_fpr(normal_pixel_scores, OP_TARGET_FPR), float("nan"))
+        pixel_thresholds[cls] = {"target_fpr": best[0], "value": best[1], "val_op_f1": best[2]}
+        print(f"  {cls:<12} operating point selected on val: FPR={best[0]:.0%} "
+              f"thr={best[1]:.4f} (val op_F1 {best[2]:.4f})")
+    results["pixel_thresholds"] = pixel_thresholds
 
     # Report on test set
     results["per_class"] = {}
     for cls in scored:
         recs = evaluate(scored[cls]["test"], alpha, recon_scaler, attn_scaler, variant, sign, with_3d_roc=True)
         ops = []
+        thr_cls = pixel_thresholds[cls]["value"]
         for m in scored[cls]["test"]:
             if 0 < m["mask"].mean() < 1:
-                s = fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign)
-                ops.append(operating_point_metrics(s, m["mask"], pixel_threshold))
+                s = _standardize_map(fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign))
+                ops.append(operating_point_metrics(s, m["mask"], thr_cls))
         op_mean = {k: float(np.mean([o[k] for o in ops])) for k in ops[0]} if ops else {}
         results["per_class"][cls] = {**aggregate(recs), **op_mean, "n_skipped_single_class": len(scored[cls]["test"]) - len(recs)}
     results["macro_auroc"] = macro_average(results["per_class"], "auroc_mean")
+    # Compute macro AUROC for local anomalies (landslides, mines) and whole-scene anomalies (burn scars, floods)
+    LOCAL = ["landslides", "mines"]
+    SCENE = ["burn_scars", "floods"]
+    results["macro_auroc_local"] = macro_average(
+        {k: v for k, v in results["per_class"].items() if k in LOCAL}, "auroc_mean")
+    results["macro_auroc_scene"] = macro_average(
+        {k: v for k, v in results["per_class"].items() if k in SCENE}, "auroc_mean")
+    print(f"macro AUROC  local-anomaly (landslides,mines): {results['macro_auroc_local']:.4f}")
+    print(f"macro AUROC  whole-scene (burn_scars,floods) : {results['macro_auroc_scene']:.4f}")
+
     results["macro_ap_gain"] = macro_average(results["per_class"], "ap_gain_mean")
 
 
@@ -274,43 +316,57 @@ def main():
                 pc[cls] = aggregate(recs)
         results["alpha_sweep"][str(a)] = macro_average(pc, "auroc_mean")
 
-    # Image-level detection
-    def image_score(m, a, sc):
-        return float(np.percentile(fused_scores(m, a, recon_scaler, sc, variant, sign), 99))
+    IMG_STATS = {
+        "p99":         lambda s: float(np.percentile(s, 99)),
+        "median":      lambda s: float(np.median(s)),
+        "mean":        lambda s: float(s.mean()),
+        "p99_over_med": lambda s: float(np.percentile(s, 99) / max(np.median(s), 1e-9)),
+        "p99_minus_med": lambda s: float(np.percentile(s, 99) - np.median(s)),
+    }
 
-    img_best = None
-    for a in ALPHA_GRID:
-        norm_v = np.array([image_score(m, a, attn_scaler) for m in normal_maps])
-        per_cls = {}
-        for cls in scored:
-            anom_v = np.array([image_score(m, a, attn_scaler) for m in scored[cls]["val"]])
-            if len(anom_v):
-                per_cls[cls] = {"auroc_mean": image_level_auroc(norm_v, anom_v)}
-        s = macro_average(per_cls, "auroc_mean", exclude=SELECTION_EXCLUDE)
-        if img_best is None or s > img_best[1]:
-            img_best = (a, s)
-    img_alpha = img_best[0]
+    # Image-level detection
+    def image_score(m, a, sc, stat="p99"):
+        return IMG_STATS[stat](fused_scores(m, a, recon_scaler, sc, variant, sign))
+
+    # alpha and image statistic selected per class on validation set
+    img_choice = {}
+    for cls in scored:
+        best = None
+        for stat in IMG_STATS:
+            for a in ALPHA_GRID:
+                nv = np.array([image_score(m, a, attn_scaler, stat) for m in normal_maps])
+                av = np.array([image_score(m, a, attn_scaler, stat) for m in scored[cls]["val"]])
+                if not len(av):
+                    continue
+                sc_ = image_level_auroc(nv, av)
+                if best is None or sc_ > best[2]:
+                    best = (a, stat, sc_)
+        img_choice[cls] = {"alpha": best[0], "stat": best[1], "val_auroc": best[2]} if best else \
+                          {"alpha": ALPHA_GRID[-1], "stat": "p99", "val_auroc": float("nan")}
+        print(f"  {cls:<12} image-level: alpha={img_choice[cls]['alpha']} "
+              f"stat={img_choice[cls]['stat']} (val AUROC {img_choice[cls]['val_auroc']:.4f})")
+    results["image_level_selection_per_class"] = img_choice
+    img_alpha = ALPHA_GRID[-1]
     results["image_level_selection"] = {"alpha": img_alpha, "val_macro_auroc": img_best[1], "pixel_level_alpha": alpha}
     print(f"image-level alpha selected on VAL: {img_alpha} (pixel-level uses {alpha})")
 
-    normal_img_scores = np.array([image_score(m, img_alpha, attn_scaler) for m in normal_maps])
+    results["image_level_auroc"] = {}
+    normal_img_by_cls = {}
+    for cls in scored:
+        a, stat = img_choice[cls]["alpha"], img_choice[cls]["stat"]
+        nv = np.array([image_score(m, a, attn_scaler, stat) for m in normal_maps])
+        av = np.array([image_score(m, a, attn_scaler, stat) for m in scored[cls]["test"]])
+        normal_img_by_cls[cls] = (nv, av)
+        results["image_level_auroc"][cls] = image_level_auroc(nv, av)
 
-
-    results["image_level_auroc"] = {
-        cls: image_level_auroc(normal_img_scores, np.array([image_score(m, img_alpha, attn_scaler) for m in scored[cls]["test"]]))
-        for cls in scored
-    }
 
     # Compute number of anomalous images detected at a fixed threshold, and false alarms on normal images.
-    img_threshold = threshold_at_fpr(normal_img_scores, OP_TARGET_FPR)
-    results["image_threshold"] = {"value": img_threshold, "target_fpr": OP_TARGET_FPR}
-    results["image_level_detection"] = {
-        cls: detection_at_operating_point(
-            normal_img_scores,
-            np.array([image_score(m, img_alpha, attn_scaler) for m in scored[cls]["test"]]),
-            img_threshold)
-        for cls in scored
-    }
+    results["image_level_detection"] = {}
+    results["image_thresholds"] = {}
+    for cls, (nv, av) in normal_img_by_cls.items():
+        thr = threshold_at_fpr(nv, OP_TARGET_FPR)
+        results["image_thresholds"][cls] = {"value": float(thr), "target_fpr": OP_TARGET_FPR}
+        results["image_level_detection"][cls] = detection_at_operating_point(nv, av, thr)
 
 
     # sensitivity curve, reported not used for selection
@@ -353,11 +409,11 @@ def main():
         for cls in scored:
             usable = [m for m in scored[cls]["test"] if 0 < m["mask"].mean() < 1] or scored[cls]["test"]
             for m in usable[:SAVE_MAPS_PER_CLASS]:
-                _s = fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign)
+                _s = _standardize_map(fused_scores(m, alpha, recon_scaler, attn_scaler, variant, sign))
                 np.savez_compressed(
                     maps_dir / f"{cls}_{m['name']}.npz",
                     fused=_s,
-                    pred_mask=(_s >= pixel_threshold).astype(np.uint8),
+                    pred_mask=(_s >= pixel_thresholds[cls]["value"]).astype(np.uint8),
                     recon=m["recon"], entropy=m["center_entropy"],
                     received=m["center_received"], mask=m["mask"],
                 )

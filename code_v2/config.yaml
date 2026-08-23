@@ -76,7 +76,7 @@ MAX_NORMAL_CALIB_IMAGES: 200                                          # maximum 
 
 ALPHA_GRID: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]   # grid of alpha values
 OP_TARGET_FPR: 0.05                                                   # false-alarm rate used to pick the decision threshold on normal data.
-                                                                      # Turns the continuous score into a binary mask and gives the image-level detection rate
+OP_FPR_GRID: [0.30, 0.20, 0.10, 0.05, 0.02, 0.01]                     # FPR selected per class
 
 SELECTION_EXCLUDE: ["floods"]                                         # excluded from alpha/variant selection (floods has 3 val images)
 SAVE_MAPS_PER_CLASS: 4                                                # score maps saved per class for qualitative figures
