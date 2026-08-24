@@ -210,7 +210,7 @@ def plot_operating_point(results, tag=""):
     ax.bar(x + 1.5 * w, g("trivial_iou"), w, label="IoU, label-all-anomalous", color="#d9d9d9")
     ax.set_xticks(x); ax.set_xticklabels(classes)
     ax.set_ylabel("score"); ax.set_ylim(0, 1.05)
-    thr = results.get("pixel_threshold", {})
+    thr = results.get("pixel_thresholds", {})
     if thr:
         for xi, c in zip(x, classes):
             f = thr.get(c, {}).get("target_fpr")
