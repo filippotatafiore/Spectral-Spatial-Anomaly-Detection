@@ -211,7 +211,14 @@ def plot_operating_point(results, tag=""):
     ax.set_xticks(x); ax.set_xticklabels(classes)
     ax.set_ylabel("score"); ax.set_ylim(0, 1.05)
     thr = results.get("pixel_threshold", {})
-    ax.set_title(f"Operating point (threshold at {thr.get('target_fpr', 0.05):.0%} FPR on normals)")
+    if thr:
+        for xi, c in zip(x, classes):
+            f = thr.get(c, {}).get("target_fpr")
+            if f is not None:
+                ax.annotate(f"{f:.0%}", (xi, 1.0), ha="center", fontsize=8, color="#555")
+        ax.set_title("Operating point (per-class threshold; FPR on normals above each group)")
+    else:
+        ax.set_title("Operating point")
     ax.legend(fontsize=8); ax.grid(alpha=0.3, axis="y")
     _save(fig, f"11_operating_point{tag}")
 

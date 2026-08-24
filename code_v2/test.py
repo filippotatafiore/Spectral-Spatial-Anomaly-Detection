@@ -345,10 +345,16 @@ def main():
                           {"alpha": ALPHA_GRID[-1], "stat": "p99", "val_auroc": float("nan")}
         print(f"  {cls:<12} image-level: alpha={img_choice[cls]['alpha']} "
               f"stat={img_choice[cls]['stat']} (val AUROC {img_choice[cls]['val_auroc']:.4f})")
+
     results["image_level_selection_per_class"] = img_choice
-    img_alpha = ALPHA_GRID[-1]
-    results["image_level_selection"] = {"alpha": img_alpha, "val_macro_auroc": img_best[1], "pixel_level_alpha": alpha}
-    print(f"image-level alpha selected on VAL: {img_alpha} (pixel-level uses {alpha})")
+    _v = [c["val_auroc"] for c in img_choice.values() if np.isfinite(c["val_auroc"])]
+    val_macro = float(np.mean(_v)) if _v else float("nan")
+    results["image_level_selection"] = {
+        "per_class": {c: {"alpha": v["alpha"], "stat": v["stat"]} for c, v in img_choice.items()},
+        "val_macro_auroc": val_macro,
+        "pixel_level_alpha": alpha,
+    }
+    print(f"image-level val macro AUROC (per-class alpha+stat): {val_macro:.4f} (pixel-level alpha {alpha})")
 
     results["image_level_auroc"] = {}
     normal_img_by_cls = {}
