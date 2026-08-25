@@ -7,6 +7,7 @@ SIGNS = (+1.0, -1.0)
 class RobustScaler:
     """
         Scaler that uses median and median absolute deviation (MAD) to scale data.
+        Put the scores from score_image() (recon, center_entropy, center_received) on a common scale.
     """
 
     def __init__(self, median=0.0, scale=1.0):
@@ -51,7 +52,8 @@ def attention_statistic(maps, variant, n_tokens):
 
 def fuse(recon, attention, alpha, recon_scaler, attn_scaler, attn_sign):
     """
-        Compute Anomaly Score = alpha * ReconError + (1 - alpha) * AttentionOutlier
+        Combine the scores with a weight alpha.
+        Anomaly Score = alpha * ReconError + (1 - alpha) * AttentionOutlier
     """
 
     # Scale two terms to a common unit-free scale

@@ -78,6 +78,6 @@ ALPHA_GRID: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]   # grid of 
 OP_TARGET_FPR: 0.05                                                   # false-alarm rate used to pick the decision threshold on normal data.
 OP_FPR_GRID: [0.30, 0.20, 0.10, 0.05, 0.02, 0.01]                     # FPR selected per class
 
-SELECTION_EXCLUDE: ["floods"]                                         # excluded from alpha/variant selection (floods has 3 val images)
+SELECTION_EXCLUDE: ["floods"]                                         # excluded from alpha/variant selection (floods has too few val images)
 SAVE_MAPS_PER_CLASS: 4                                                # score maps saved per class for qualitative figures
 PCA_COMPONENTS: 4                                                     # components for the PCA baseline

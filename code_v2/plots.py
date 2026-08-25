@@ -9,7 +9,7 @@
 
 # version of the model used to generate the artifacts
 MODEL_VERSION = "v2"
-MODEL_RUN = "1"
+MODEL_RUN = "2"
 
 
 import argparse
