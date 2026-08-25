@@ -124,6 +124,7 @@ OP_TARGET_FPR = float(config.get("OP_TARGET_FPR", 0.05))
 OP_FPR_GRID = config.get("OP_FPR_GRID", [0.30, 0.20, 0.10, 0.05, 0.02, 0.01])
 
 SELECTION_EXCLUDE = config.get("SELECTION_EXCLUDE", [])
+REPORT_EXCLUDE = config.get("REPORT_EXCLUDE", [])
 SAVE_MAPS_PER_CLASS = config.get("SAVE_MAPS_PER_CLASS", 0)
 PCA_COMPONENTS = config.get("PCA_COMPONENTS", 4)
 

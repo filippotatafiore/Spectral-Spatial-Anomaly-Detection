@@ -26,7 +26,7 @@ from utils.globals import (
     DECODER_HIDDEN, D_MODEL, DROPOUT, EMBED_HIDDEN, FEATURE_DIM, FFN_HIDDEN, MASK_CENTER,
     MAX_IMAGES_PER_CLASS, MAX_NORMAL_CALIB_IMAGES, MAX_NORMAL_TEST_IMAGES, N_BANDS,
     N_DCT_COEFFS, N_HEADS, N_LAYERS, N_TOKENS, PATCH_SIZE, PCA_COMPONENTS, POS_ENCODING,
-    SAVE_MAPS_PER_CLASS, SEED, SELECTION_EXCLUDE, TEST_CLASSES, USE_DCT, USE_RAW,
+    SAVE_MAPS_PER_CLASS, SEED, SELECTION_EXCLUDE, REPORT_EXCLUDE, TEST_CLASSES, USE_DCT, USE_RAW,
     SPECTRAL_MASK_N, SPECTRAL_MASK_EVAL_GROUPS, LOCAL_CLASSES, SCENE_CLASSES,
     images_per_class,
 )
@@ -361,14 +361,19 @@ def report_pixel_level(ctx):
             print(f"  {cls:<12} dropped {n_skip}/{len(ctx.scored[cls]['test'])} images with single-class masks (AUROC undefined)")
 
     pc = ctx.results["per_class"]
-    ctx.results["macro_auroc"] = macro_average(pc, "auroc_mean")
-    ctx.results["macro_ap_gain"] = macro_average(pc, "ap_gain_mean")
+    ctx.results["macro_auroc_all"] = macro_average(pc, "auroc_mean")
+    ctx.results["macro_ap_gain_all"] = macro_average(pc, "ap_gain_mean")
+    ctx.results["macro_auroc"] = macro_average(pc, "auroc_mean", exclude=REPORT_EXCLUDE)
+    ctx.results["macro_ap_gain"] = macro_average(pc, "ap_gain_mean", exclude=REPORT_EXCLUDE)
+    ctx.results["report_excluded"] = REPORT_EXCLUDE
 
     # Distinguish between local and scene anomalies
     ctx.results["macro_auroc_local"] = macro_average(
-        {k: v for k, v in pc.items() if k in LOCAL_CLASSES}, "auroc_mean")
+        {k: v for k, v in pc.items() if k in LOCAL_CLASSES}, "auroc_mean", exclude=REPORT_EXCLUDE)
     ctx.results["macro_auroc_scene"] = macro_average(
-        {k: v for k, v in pc.items() if k in SCENE_CLASSES}, "auroc_mean")
+        {k: v for k, v in pc.items() if k in SCENE_CLASSES}, "auroc_mean", exclude=REPORT_EXCLUDE)
+    print(f"macro AUROC  headline (excluding {REPORT_EXCLUDE}): {ctx.results['macro_auroc']:.4f}")
+    print(f"macro AUROC  all classes                          : {ctx.results['macro_auroc_all']:.4f}")
 
 
 def select_image_scoring(ctx):
@@ -534,7 +539,7 @@ def report_alpha_sweeps(ctx):
             recs = evaluate(ctx, ctx.scored[cls]["test"], alpha=a)
             if recs:
                 pc[cls] = aggregate(recs)
-        ctx.results["alpha_sweep"][str(a)] = macro_average(pc, "auroc_mean")
+        ctx.results["alpha_sweep"][str(a)] = macro_average(pc, "auroc_mean", exclude=REPORT_EXCLUDE)
 
     ctx.results["image_level_alpha_sweep"] = {}
     for a in ALPHA_GRID:
@@ -571,8 +576,10 @@ def run_baselines(ctx):
             ctx.results["baselines"][key][cls] = aggregate(acc[key])
 
     for key in ("rx", "pca", "spectral_linear"):
-        ctx.results["baselines"][f"{key}_macro_auroc"] = macro_average(
+        ctx.results["baselines"][f"{key}_macro_auroc_all"] = macro_average(
             ctx.results["baselines"][key], "auroc_mean")
+        ctx.results["baselines"][f"{key}_macro_auroc"] = macro_average(
+            ctx.results["baselines"][key], "auroc_mean", exclude=REPORT_EXCLUDE)
 
 
 def save_score_maps(ctx):
