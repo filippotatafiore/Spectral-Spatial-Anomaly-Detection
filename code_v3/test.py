@@ -209,7 +209,7 @@ def score_images(ctx):
     for cls in TEST_CLASSES:
         ctx.scored[cls] = {}
         for part in ("val", "test"):
-            items = subsample(ctx.eval_splits[cls][part], images_per_class(cls))
+            items = subsample(ctx.eval_splits[cls][part], images_per_class(cls, part))
             print(f"\nScoring {cls}/{part}: {len(items)} images")
             ctx.scored[cls][part] = score_image_list(ctx.model, ctx.builder, items, ctx.device, f"{cls}/{part}", with_masks=True)
 
@@ -333,9 +333,7 @@ def report_pixel_level(ctx):
                        if p_ops else {})
 
         # Same metrics, with a single global raw-score threshold (for comparison)
-        g_thr = float(threshold_at_fpr(
-            np.concatenate([ctx.score(m).ravel() for m in ctx.normal_val_maps]),
-            ctx.pixel_thresholds[cls]["target_fpr"]))
+        g_thr = ctx.results["global_pixel_threshold"][f"fpr_{ctx.pixel_thresholds[cls]['target_fpr']}"]
         g_ops = [operating_point_metrics(ctx.score(m), m["mask"], g_thr)
                  for m in ctx.scored[cls]["test"] if 0 < m["mask"].mean() < 1]
         op_mean.update({f"global_{k}": float(np.mean([o[k] for o in g_ops]))
@@ -600,7 +598,9 @@ def save_score_maps(ctx):
     
     for m in ctx.normal_test_maps[:SAVE_MAPS_PER_CLASS]:
         s = standardize_map(ctx.score(m))
-        thr = float(np.median([t["value"] for t in ctx.pixel_thresholds.values()]))
+        # Use the class-agnostic threshold
+        thr = ctx.pixel_thresholds.get("__pooled__", {}).get(
+            "value", float(np.median([t["value"] for t in ctx.pixel_thresholds.values()])))
         np.savez_compressed(
             maps_dir / f"normal_{m['name']}.npz",
             fused=s, pred_mask=(s >= thr).astype(np.uint8),
@@ -662,7 +662,7 @@ def run_checkpoint_sweep(ctx):
         ctx.model.eval()
         per_class = {}
         for cls in TEST_CLASSES:
-            items = subsample(ctx.eval_splits[cls]["val"], images_per_class(cls))
+            items = subsample(ctx.eval_splits[cls]["val"], images_per_class(cls, "val"))
             maps = score_image_list(ctx.model, ctx.builder, items, ctx.device, f"sweep/{cls}", with_masks=True)
             recs = evaluate(ctx, maps)
             if recs:
