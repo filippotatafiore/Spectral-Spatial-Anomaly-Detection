@@ -76,6 +76,8 @@ CKPT_EVERY: 5               # save a checkpoint model every CKPT_EVERY epochs
 # --------------------------- evaluation
 CHUNK_PIXELS: 512                                                     # center pixels scored per forward pass at inference
 MAX_IMAGES_PER_CLASS: 250                                             # maximum number of test images per class to score (null = use all)
+MAX_IMAGES_PER_CLASS_OVERRIDE:     # max number of test images per-class overrides. landslides has 2622 test images and
+  landslides: 1000
 MAX_NORMAL_CALIB_IMAGES: 200                                          # maximum number of normal VAL images to use to calibrate the score scales and to make selection decisions
 MAX_NORMAL_TEST_IMAGES: 671                                           # maximum number of normal TEST images
 

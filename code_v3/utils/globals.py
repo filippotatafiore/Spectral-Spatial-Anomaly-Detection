@@ -104,6 +104,13 @@ CKPT_EVERY = config.get("CKPT_EVERY", 0)
 # --------------------------- evaluation
 CHUNK_PIXELS = config["CHUNK_PIXELS"]
 MAX_IMAGES_PER_CLASS = config["MAX_IMAGES_PER_CLASS"]
+MAX_IMAGES_PER_CLASS_OVERRIDE = config.get("MAX_IMAGES_PER_CLASS_OVERRIDE") or {}
+def images_per_class(cls):
+    """
+        Test-image cap for one class, honouring the per-class override.
+    """
+    return MAX_IMAGES_PER_CLASS_OVERRIDE.get(cls, MAX_IMAGES_PER_CLASS)
+
 MAX_NORMAL_CALIB_IMAGES = config["MAX_NORMAL_CALIB_IMAGES"]
 MAX_NORMAL_TEST_IMAGES = config.get("MAX_NORMAL_TEST_IMAGES", 671)
 

@@ -12,7 +12,8 @@ from data.transforms import FeatureBuilder
 from data.dataset import _load_image
 from evaluation.metrics import (per_image_metrics, aggregate, image_level_auroc, macro_average,
                                 operating_point_metrics, threshold_at_fpr, roc_3d,
-                                average_precision, classification_metrics, evaluate)
+                                average_precision, classification_metrics, evaluate, fit_logistic, apply_logistic,
+                                )
 from evaluation.scoring import attention_statistic, fuse, RobustScaler, ATTN_VARIANTS, SIGNS, IMG_STATS, standardize_map, score_image_list
 from evaluation.baselines import PCAReconstructor, rx_score, SpectralLinearPredictor
 
@@ -27,6 +28,7 @@ from utils.globals import (
     N_DCT_COEFFS, N_HEADS, N_LAYERS, N_TOKENS, PATCH_SIZE, PCA_COMPONENTS, POS_ENCODING,
     SAVE_MAPS_PER_CLASS, SEED, SELECTION_EXCLUDE, TEST_CLASSES, USE_DCT, USE_RAW,
     SPECTRAL_MASK_N, SPECTRAL_MASK_EVAL_GROUPS, LOCAL_CLASSES, SCENE_CLASSES,
+    images_per_class,
 )
 
 
@@ -81,6 +83,7 @@ class Ctx:
     # filled by the selection stages
     pixel_thresholds: dict = field(default_factory=dict)
     img_choice: dict = field(default_factory=dict)
+    img_combo: dict = field(default_factory=dict)
 
     results: dict = field(default_factory=dict)
 
@@ -206,7 +209,7 @@ def score_images(ctx):
     for cls in TEST_CLASSES:
         ctx.scored[cls] = {}
         for part in ("val", "test"):
-            items = subsample(ctx.eval_splits[cls][part], MAX_IMAGES_PER_CLASS)
+            items = subsample(ctx.eval_splits[cls][part], images_per_class(cls))
             print(f"\nScoring {cls}/{part}: {len(items)} images")
             ctx.scored[cls][part] = score_image_list(ctx.model, ctx.builder, items, ctx.device, f"{cls}/{part}", with_masks=True)
 
@@ -282,6 +285,27 @@ def select_pixel_thresholds(ctx):
 
     ctx.results["pixel_thresholds"] = ctx.pixel_thresholds
 
+    # global threshold for comparison
+    raw_normal = np.concatenate([ctx.score(m).ravel() for m in ctx.normal_val_maps])  # raw (non-standardised) score thresholds from normal VAL pixels
+    ctx.results["global_pixel_threshold"] = {f"fpr_{f}": float(threshold_at_fpr(raw_normal, f)) for f in OP_FPR_GRID}
+
+    # Class-agnostic pixel threshold
+    pooled_val = [m for cls in ctx.scored if cls not in SELECTION_EXCLUDE
+                  for m in ctx.scored[cls]["val"] if 0 < m["mask"].mean() < 1]
+    best = None
+    for f in OP_FPR_GRID:
+        thr = threshold_at_fpr(normal_pixel_scores, f)
+        f1s = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], thr)["op_f1"]
+               for m in pooled_val]
+
+        if f1s and (best is None or np.mean(f1s) > best[2]):
+            best = (f, thr, float(np.mean(f1s)))
+    if best:
+        ctx.pixel_thresholds["__pooled__"] = {"target_fpr": best[0], "value": best[1], "val_op_f1": best[2]}
+        print(f"  {'POOLED':<12} pixel operating point on val: FPR={best[0]:.0%} "
+              f"thr={best[1]:.4f} (val op_F1 {best[2]:.4f})")
+
+
 
 def report_pixel_level(ctx):
     """
@@ -293,17 +317,47 @@ def report_pixel_level(ctx):
         recs = evaluate(ctx, ctx.scored[cls]["test"], with_3d_roc=True)
         # Threshold selected on VAL for this class
         thr = ctx.pixel_thresholds[cls]["value"]
+        # class-agnostic threshold (selected on VAL pooled over all classes)
+        pooled_thr = ctx.pixel_thresholds.get("__pooled__", {}).get("value", thr)
         # Pixel-level metrics at the selected threshold
         ops = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], thr)
                for m in ctx.scored[cls]["test"] if 0 < m["mask"].mean() < 1]
         
         op_mean = {k: float(np.mean([o[k] for o in ops])) for k in ops[0]} if ops else {}
+
+        # Same images, class-agnostic threshold
+        p_ops = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], pooled_thr)
+                 for m in ctx.scored[cls]["test"] if 0 < m["mask"].mean() < 1]
+        op_mean.update({f"pooled_{k}": float(np.mean([o[k] for o in p_ops]))
+                        for k in ("op_f1", "op_iou", "op_precision", "op_recall")}
+                       if p_ops else {})
+
+        # Same metrics, with a single global raw-score threshold (for comparison)
+        g_thr = float(threshold_at_fpr(
+            np.concatenate([ctx.score(m).ravel() for m in ctx.normal_val_maps]),
+            ctx.pixel_thresholds[cls]["target_fpr"]))
+        g_ops = [operating_point_metrics(ctx.score(m), m["mask"], g_thr)
+                 for m in ctx.scored[cls]["test"] if 0 < m["mask"].mean() < 1]
+        op_mean.update({f"global_{k}": float(np.mean([o[k] for o in g_ops]))
+                        for k in ("op_f1", "op_iou", "op_precision", "op_recall", "op_fpr")}
+                       if g_ops else {})
+
+        # Handle skipped images (with single-class masks, AUROC undefined)
+        saturated = [m for m in ctx.scored[cls]["test"] if m["mask"].mean() == 1]  # all pixels are anomalous
+        empty = [m for m in ctx.scored[cls]["test"] if m["mask"].mean() == 0]  # all pixels are normal
+        sat_recall = [float((standardize_map(ctx.score(m)) >= thr).mean()) for m in saturated]  # fraction of pixels flagged as anomalous in saturated images
+        empty_fpr = [float((standardize_map(ctx.score(m)) >= thr).mean()) for m in empty]  # fraction of pixels flagged as anomalous in empty images
+
         n_skip = len(ctx.scored[cls]["test"]) - len(recs)
 
         ctx.results["per_class"][cls] = {
             **aggregate(recs), **op_mean,
             "n_skipped_single_class": n_skip,
             "n_test_total": len(ctx.scored[cls]["test"]),
+            "n_saturated": len(saturated),
+            "saturated_recall": float(np.mean(sat_recall)) if sat_recall else float("nan"),
+            "n_empty_mask": len(empty),
+            "empty_mask_fpr": float(np.mean(empty_fpr)) if empty_fpr else float("nan"),
         }
         if n_skip:
             print(f"  {cls:<12} dropped {n_skip}/{len(ctx.scored[cls]['test'])} images with single-class masks (AUROC undefined)")
@@ -363,7 +417,28 @@ def select_image_scoring(ctx):
                 best = (a, stat, sc)
 
     ctx.img_choice["__pooled__"] = {"alpha": best[0], "stat": best[1], "val_auroc": best[2]}
-    print(f"  {'POOLED':<12} image-level: alpha={best[0]} stat={best[1]} (val AUROC {best[2]:.4f})")
+    print(f"  {'POOLED':<12} best single statistic: alpha={best[0]} stat={best[1]} (val AUROC {best[2]:.4f})")
+
+    # Combine all statistics instead of keeping only the best one
+    a_star = best[0]
+
+    def feats(maps_list):
+        return np.array([[ctx.image_score(m, s, a_star) for s in IMG_STATS] for m in maps_list])
+
+    Xn, Xa = feats(ctx.normal_val_maps), feats(pooled_val)
+    X = np.vstack([Xn, Xa])
+    y = np.concatenate([np.zeros(len(Xn)), np.ones(len(Xa))])
+    mu, sd = X.mean(0), X.std(0) + 1e-9  # standardise: the statistics have wildly different ranges
+    # fit a logistic regression on the pooled VAL set, to combine the statistics into one score
+    w = fit_logistic((X - mu) / sd, y)
+    val_auroc = image_level_auroc(apply_logistic((Xn - mu) / sd, w), apply_logistic((Xa - mu) / sd, w))
+
+    ctx.img_combo = {"alpha": a_star, "stats": list(IMG_STATS),
+                     "mu": mu.tolist(), "sd": sd.tolist(), "w": w.tolist(),
+                     "val_auroc": float(val_auroc)}
+    print(f"  {'POOLED':<12} combined statistics:   alpha={a_star} (val AUROC {val_auroc:.4f}, single best was {best[2]:.4f})")
+    ctx.results["image_level_combo"] = ctx.img_combo
+
 
     ctx.results["image_level_selection"] = ctx.img_choice
 
@@ -403,6 +478,23 @@ def report_image_level(ctx):
     # Compute image-level metrics for the pooled set of all anomaly types
     pooled_test = [m for cls in ctx.scored for m in ctx.scored[cls]["test"]]
     report("__pooled__", ctx.img_choice["__pooled__"], pooled_test)
+
+    # Same pooled task, score images with the combined statistics
+    if ctx.img_combo:
+        c = ctx.img_combo
+        mu, sd, w, a = np.array(c["mu"]), np.array(c["sd"]), np.array(c["w"]), c["alpha"]
+        def combo_scores(maps_list):
+            X = np.array([[ctx.image_score(m, s, a) for s in c["stats"]] for m in maps_list])
+            return apply_logistic((X - mu) / sd, w)
+        nv_val = combo_scores(ctx.normal_val_maps)
+        nv, av = combo_scores(ctx.normal_test_maps), combo_scores(pooled_test)
+        thr = threshold_at_fpr(nv_val, OP_TARGET_FPR)      # threshold from VAL normals, as everywhere
+        y = np.concatenate([np.zeros(len(nv), dtype=np.int8), np.ones(len(av), dtype=np.int8)])
+        ctx.results["image_level_auroc"]["__pooled_combo__"] = image_level_auroc(nv, av)
+        ctx.results["image_level_ap"]["__pooled_combo__"] = average_precision(y, np.concatenate([nv, av]))
+        ctx.results["image_thresholds"]["__pooled_combo__"] = {
+            "value": float(thr), "target_fpr": OP_TARGET_FPR, "chosen_on": "normal val"}
+        ctx.results["image_level_detection"]["__pooled_combo__"] = classification_metrics(nv, av, thr)
 
     d = ctx.results["image_level_detection"].get("__pooled__")
     if d:
@@ -570,7 +662,7 @@ def run_checkpoint_sweep(ctx):
         ctx.model.eval()
         per_class = {}
         for cls in TEST_CLASSES:
-            items = subsample(ctx.eval_splits[cls]["val"], MAX_IMAGES_PER_CLASS)
+            items = subsample(ctx.eval_splits[cls]["val"], images_per_class(cls))
             maps = score_image_list(ctx.model, ctx.builder, items, ctx.device, f"sweep/{cls}", with_masks=True)
             recs = evaluate(ctx, maps)
             if recs:

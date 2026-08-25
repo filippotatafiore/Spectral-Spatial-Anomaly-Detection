@@ -284,3 +284,29 @@ def classification_metrics(normal_scores, anomalous_scores, threshold):
         "prevalence": a.size / max(a.size + n.size, 1),
         "threshold": float(threshold),
     }
+
+
+
+# ======================================== Logistic regression to combine the image statistics (IMG_STATS) into a single score
+def fit_logistic(X, y, l2=1.0, iters=400, lr=1.0):
+    """
+        L2-regularised logistic regression used to combine the image statistics into a single score.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    Xb = np.hstack([X, np.ones((len(X), 1))])
+    w = np.zeros(Xb.shape[1])
+    for _ in range(iters):
+        p = 1.0 / (1.0 + np.exp(-np.clip(Xb @ w, -30, 30)))
+        g = Xb.T @ (p - y) / len(y)
+        g[:-1] += l2 * w[:-1] / len(y)
+        w -= lr * g
+    return w
+
+
+def apply_logistic(X, w):
+    """
+        Decision scores (log-odds) for the fitted model.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    return np.hstack([X, np.ones((len(X), 1))]) @ w
