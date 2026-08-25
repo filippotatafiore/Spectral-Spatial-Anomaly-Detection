@@ -1,0 +1,89 @@
+# --------------------------- paths
+dataset_path: "Sentinel2_anomaly_detection"
+artifacts_dir: "artifacts"
+
+
+# --------------------------- data
+BANDS: ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B9", "B11", "B12"]
+
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "floods", "landslides", "mines"]
+TEST_CLASSES:  ["burn_scars", "floods", "landslides", "mines"]
+LOCAL_CLASSES: ["landslides"]                       # local (small) anomalies
+SCENE_CLASSES: ["burn_scars", "floods", "mines"]    # whole-scene anomalies
+
+NORMAL_VAL_FRACTION: 0.10   # fraction of normals held out for validation
+NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for TESTING
+
+EVAL_VAL_FRACTION: 0.20     # fraction of test images
+SPLIT_SALT: "ssad_1"        # 
+GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val
+
+CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
+
+
+# --------------------------- features
+PATCH_SIZE: 9         # P, must be odd (patches are pixel-centered)
+N_DCT_COEFFS: 6       # K, number of DCT coefficients to keep
+
+USE_RAW: true         # features = [raw_bands | dct_coeffs]
+USE_DCT: true
+
+
+# --------------------------- model
+D_MODEL: 64                   # transformer width. Must be divisible by N_HEADS, and by 4 if using POS_ENCODING = sinusoidal2d
+                              # Note: if D_MODEL > FEATURE_DIM then there is no bottleneck and the model could learn the identity map
+N_HEADS: 8                    # attention heads, head_dim = D_MODEL/N_HEADS = 8
+N_LAYERS: 4                   # encoder blocks
+DROPOUT: 0.1
+
+FFN_HIDDEN: 256               # feed-forward inner width
+EMBED_HIDDEN: 128             # embedding MLP hidden width
+DECODER_HIDDEN: 128           # decoder MLP hidden width
+
+POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
+
+MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
+SPECTRAL_MASK_N: 6            # hide SPECTRAL_MASK_N bands and predict the centre pixel's hidden bands from the visible ones. (0 = off)
+SPECTRAL_MASK_EVAL_GROUPS: 2  # = 12 / SPECTRAL_MASK_N. At eval, hide the bands in SPECTRAL_MASK_EVAL_GROUPS disjoint groups so every band is predicted exactly once
+INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
+
+
+# --------------------------- train
+EPOCHS: 30
+BATCH_IMAGES: 8
+CENTERS_PER_IMAGE: 256      # number of random centers to sample as (patches) centers per image for training
+
+LR: 3.0e-4                  # optimizer learning rate
+WEIGHT_DECAY: 1.0e-4        # optimizer weight decay
+WARMUP_STEPS: 500           # scheduler warmup steps
+AMP: true                   # float16 autocast
+
+GRAD_CLIP: 1.0              # gradient clipping threshold (None to disable)
+
+NUM_WORKERS: 2              # DataLoader worker processes
+SOURCE_BALANCE_POWER: 0.0   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+
+SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
+VAL_SEED: 12345             # random seed for centers used for the validation loss
+
+LOSS_TOKENS: "center"       # "all" or "center": which tokens to compute the loss on
+
+EARLY_STOP_PATIENCE: 999    # early stopping patience (in epochs) for validation loss
+LOG_EVERY: 50               # for each epoch, print every LOG_EVERY steps
+CKPT_EVERY: 5               # save a checkpoint model every CKPT_EVERY epochs
+
+
+# --------------------------- evaluation
+CHUNK_PIXELS: 512                                                     # center pixels scored per forward pass at inference
+MAX_IMAGES_PER_CLASS: 250                                             # maximum number of test images per class to score (null = use all)
+MAX_NORMAL_CALIB_IMAGES: 200                                          # maximum number of normal VAL images to use to calibrate the score scales and to make selection decisions
+MAX_NORMAL_TEST_IMAGES: 671                                           # maximum number of normal TEST images
+
+
+ALPHA_GRID: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]   # grid of alpha values
+OP_TARGET_FPR: 0.05                                                   # false-alarm rate used to pick the decision threshold on normal data.
+OP_FPR_GRID: [0.30, 0.20, 0.10, 0.05, 0.02, 0.01]                     # grid of quantiles of normal scores used to pick the decision threshold on normal data
+
+SELECTION_EXCLUDE: ["floods"]                                         # excluded from alpha/variant selection (floods has too few val images)
+SAVE_MAPS_PER_CLASS: 4                                                # score maps saved per class for qualitative figures
+PCA_COMPONENTS: 4                                                     # components for the PCA baseline
