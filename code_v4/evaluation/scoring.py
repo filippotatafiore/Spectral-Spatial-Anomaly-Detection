@@ -42,6 +42,7 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
     use_amp = device.type == "cuda"
 
     recon_map = np.empty(height * width, dtype=np.float32)
+    group_maps = (np.empty((len(band_groups) if band_groups else 1, height * width), dtype=np.float32) if SPECTRAL_MASK_MODE == "group" else None)
     entropy_map = np.empty(height * width, dtype=np.float32)
     received_map = np.empty(height * width, dtype=np.float32)
 
@@ -82,13 +83,22 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
                     out = o                      # attention statistics from the first pass only
                 d = o["recon"][:, center].float()[:, hidden] - target[:, center].float()[:, hidden]
                 err = err + (d ** 2).sum(-1)
+
+                # Keep also per-group error
+                if gi == 0:
+                    group_err = torch.zeros(len(band_groups), hi - lo, device=device)
+                group_err[gi, :] = (d ** 2).mean(-1)
+
             err = err / N_BANDS                  # every band contributed exactly once
 
         recon_map[lo:hi] = err.cpu().numpy()
+        if group_maps is not None:
+            group_maps[:, lo:hi] = group_err.cpu().numpy()
         entropy_map[lo:hi] = out["center_entropy"].float().cpu().numpy()
         received_map[lo:hi] = out["center_received"].float().cpu().numpy()
 
     return {
+        "group_recon": (group_maps.reshape(len(band_groups), height, width) if band_groups is not None else None),
         "recon": recon_map.reshape(height, width),
         "center_entropy": entropy_map.reshape(height, width),
         "center_received": received_map.reshape(height, width),
