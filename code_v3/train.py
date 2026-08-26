@@ -13,7 +13,7 @@ from utils.globals import (
     D_MODEL, N_HEADS, N_LAYERS, FFN_HIDDEN, DROPOUT, EMBED_HIDDEN, DECODER_HIDDEN, POS_ENCODING, LR, WEIGHT_DECAY,
     EPOCHS, WARMUP_STEPS, AMP, ARTIFACTS_DIR,
     GRAD_CLIP, LOG_EVERY, EARLY_STOP_PATIENCE, CKPT_EVERY,
-    SPECTRAL_MASK_N, 
+    SPECTRAL_MASK_N, SPECTRAL_MASK_MODE, SPECTRAL_BAND_GROUPS,
 )
 from utils.globals import config as CONFIG
 
@@ -43,10 +43,18 @@ def training_step(model, builder, images, generator):
 
     # Extract pixel-centered patches
     raw = extract_patches(images, centers, PATCH_SIZE)  # (B, N, T, C)
-    # spectral masking: hide SPECTRAL_MASK_N bands, make the model infer them from the visible bands (same bands are hidden in every token of the patch)
+
+    # Spectral masking: model must reconstruct the hidden bands from the available ones (same bands are hidden in every token of the patch)
     hidden = None
-    if SPECTRAL_MASK_N > 0:
+    if SPECTRAL_MASK_MODE == "group" and SPECTRAL_BAND_GROUPS:  # Hide one whole random physical group of the bands
+        _names = sorted(SPECTRAL_BAND_GROUPS)
+        _pick = _names[int(torch.randint(len(_names), (1,), generator=generator,
+                                         device=raw.device).item())]
+        hidden = torch.tensor(SPECTRAL_BAND_GROUPS[_pick], device=raw.device, dtype=torch.long)
+    elif SPECTRAL_MASK_N > 0:  # hide SPECTRAL_MASK_N random bands
         hidden = torch.randperm(N_BANDS, generator=generator, device=raw.device)[:SPECTRAL_MASK_N]
+
+    if hidden is not None:
         raw_masked = raw.clone()
         raw_masked[..., hidden] = builder.band_mean[hidden]
         features, _ = builder(raw_masked)   # bands hidden

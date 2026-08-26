@@ -73,6 +73,9 @@ POS_ENCODING = config["POS_ENCODING"]
 MASK_CENTER = config["MASK_CENTER"]
 SPECTRAL_MASK_N = int(config.get("SPECTRAL_MASK_N", 0))
 SPECTRAL_MASK_EVAL_GROUPS = int(config.get("SPECTRAL_MASK_EVAL_GROUPS", 3))
+SPECTRAL_MASK_MODE = config.get("SPECTRAL_MASK_MODE", "random")
+SPECTRAL_BAND_GROUPS = config.get("SPECTRAL_BAND_GROUPS") or {}
+
 INPUT_NOISE_STD = float(config.get("INPUT_NOISE_STD", 0.0))
 
 
@@ -159,3 +162,11 @@ if not (0 <= SPECTRAL_MASK_N < N_BANDS):
 if SPECTRAL_MASK_N > 0 and LOSS_TOKENS != "center":
     raise ValueError("SPECTRAL_MASK_N > 0 requires LOSS_TOKENS='center': the loss must be "
                      "computed on the hidden bands of the scored pixel only.")
+
+if SPECTRAL_MASK_MODE not in ("random", "group"):
+    raise ValueError(f"SPECTRAL_MASK_MODE must be 'random' or 'group', got {SPECTRAL_MASK_MODE!r}")
+if SPECTRAL_MASK_MODE == "group":
+    _seen = sorted(b for g in SPECTRAL_BAND_GROUPS.values() for b in g)
+    if _seen != list(range(N_BANDS)):
+        raise ValueError("SPECTRAL_BAND_GROUPS must partition all bands exactly once, "
+                         f"got {_seen} for {N_BANDS} bands")

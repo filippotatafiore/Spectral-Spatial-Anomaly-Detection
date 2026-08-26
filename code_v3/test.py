@@ -342,7 +342,9 @@ def report_pixel_level(ctx):
         op_mean = {k: float(np.mean([o[k] for o in ops])) for k in ops[0]} if ops else {}
 
         # Same images, class-agnostic threshold
-        p_ops = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], pooled_thr)
+        _pmode = ctx.pixel_thresholds.get("__pooled__", {}).get("mode", mode)
+        _pm = lambda mm: standardize_map(ctx.score(mm)) if _pmode == "adaptive" else ctx.score(mm)
+        p_ops = [operating_point_metrics(_pm(m), m["mask"], pooled_thr)
                  for m in ctx.scored[cls]["test"] if 0 < m["mask"].mean() < 1]
         op_mean.update({f"pooled_{k}": float(np.mean([o[k] for o in p_ops]))
                         for k in ("op_f1", "op_iou", "op_precision", "op_recall")}

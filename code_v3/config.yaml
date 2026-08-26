@@ -43,8 +43,15 @@ DECODER_HIDDEN: 128           # decoder MLP hidden width
 POS_ENCODING: "sinusoidal2d"  # "sinusoidal2d" or "learned"
 
 MASK_CENTER: false            # true: center token replaced by a learned [MASK] embedding, so the spectrum must be predicted from its neighbourhood
-SPECTRAL_MASK_N: 6            # hide SPECTRAL_MASK_N bands and predict the centre pixel's hidden bands from the visible ones. (0 = off)
+SPECTRAL_MASK_N: 6            # hide SPECTRAL_MASK_N bands and predict the centre pixel's hidden bands from the visible ones. (0 = off).
+                              # Ignored when SPECTRAL_MASK_MODE is "group".
 SPECTRAL_MASK_EVAL_GROUPS: 2  # = 12 / SPECTRAL_MASK_N. At eval, hide the bands in SPECTRAL_MASK_EVAL_GROUPS disjoint groups so every band is predicted exactly once
+SPECTRAL_MASK_MODE: "group"   # "random" = hide SPECTRAL_MASK_N random bands. "group"  = hide ONE PHYSICAL BAND GROUP at a time.
+SPECTRAL_BAND_GROUPS:         # physical groups (as indices into BANDS)
+  VIS:         [0, 1, 2, 3]         # B1  B2  B3  B4
+  REDEDGE_NIR: [4, 5, 6, 7, 8]      # B5  B6  B7  B8  B8A
+  SWIR:        [9, 10, 11]          # B9  B11 B12
+
 INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
 
 

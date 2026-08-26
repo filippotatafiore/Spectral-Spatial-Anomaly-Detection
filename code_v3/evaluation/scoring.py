@@ -7,7 +7,7 @@ from data.dataset import _load_image
 
 from utils.globals import (
     CHUNK_PIXELS, PATCH_SIZE, N_TOKENS, N_BANDS, SPECTRAL_MASK_N, SPECTRAL_MASK_EVAL_GROUPS,
-    CLIP_REFLECTANCE, 
+    CLIP_REFLECTANCE, SPECTRAL_MASK_MODE, SPECTRAL_BAND_GROUPS,
 )
 
 
@@ -46,8 +46,12 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
     received_map = np.empty(height * width, dtype=np.float32)
 
     band_groups = None
-    if SPECTRAL_MASK_N > 0:
-        # Disjoint groups covering all bands, so every band is predicted exactly once.
+    if SPECTRAL_MASK_MODE == "group" and SPECTRAL_BAND_GROUPS:
+        # Rotate through the physical groups: every band is predicted exactly once
+        band_groups = [torch.tensor(SPECTRAL_BAND_GROUPS[g], device=device, dtype=torch.long)
+                       for g in sorted(SPECTRAL_BAND_GROUPS)]
+    elif SPECTRAL_MASK_N > 0:
+        # Disjoint groups covering all bands, so every band is predicted exactly once
         perm = torch.randperm(N_BANDS, generator=torch.Generator().manual_seed(0))
         band_groups = [perm[i::SPECTRAL_MASK_EVAL_GROUPS].to(device)
                        for i in range(SPECTRAL_MASK_EVAL_GROUPS)]
