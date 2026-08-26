@@ -23,7 +23,7 @@ CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalizati
 
 # --------------------------- features
 PATCH_SIZE: 9           # P, must be odd (patches are pixel-centered). Dense inner patch: every pixel within radius 4 becomes a token
-MULTISCALE_OUTER: 21    # sparse outer context
+MULTISCALE_OUTER: 17    # sparse outer context
 MULTISCALE_STRIDE: 4    # stride at whici to sample the sparse outer context, keeping only positions OUTSIDE the dense core. MULTISCALE_STRIDE=0 disables it
 
 N_DCT_COEFFS: 6       # K, number of DCT coefficients to keep

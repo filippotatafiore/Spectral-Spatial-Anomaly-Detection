@@ -10,7 +10,7 @@ from network.transformer_ae import SpectralSpatialTransformerAE
 
 from data.transforms import FeatureBuilder
 from data.dataset import _load_image
-from evaluation.metrics import (per_image_metrics, aggregate, image_level_auroc, macro_average,
+from evaluation.metrics import (per_image_metrics, roc_auc, aggregate, image_level_auroc, macro_average,
                                 operating_point_metrics, threshold_at_fpr, roc_3d,
                                 average_precision, classification_metrics, evaluate, fit_logistic, apply_logistic,
                                 )
@@ -28,6 +28,7 @@ from utils.globals import (
     N_DCT_COEFFS, N_HEADS, N_LAYERS, N_TOKENS, PATCH_SIZE, PCA_COMPONENTS, POS_ENCODING,
     SAVE_MAPS_PER_CLASS, SEED, SELECTION_EXCLUDE, REPORT_EXCLUDE, TEST_CLASSES, USE_DCT, USE_RAW,
     SPECTRAL_MASK_N, SPECTRAL_MASK_EVAL_GROUPS, LOCAL_CLASSES, SCENE_CLASSES,
+    SPECTRAL_BAND_GROUPS,
     images_per_class,
 )
 
@@ -569,6 +570,41 @@ def report_false_alarms(ctx):
               f"corr with true base rate {np.corrcoef(truth, flagged)[0, 1]:+.3f}")
 
 
+def report_group_attribution(ctx):
+    """
+        Which band group flags each anomaly type.
+    """
+    if not (SPECTRAL_BAND_GROUPS and any(
+            m.get("group_recon") is not None for cls in ctx.scored for m in ctx.scored[cls]["test"])):
+        return                                  # random-band masking: no groups to attribute to
+
+    names = sorted(SPECTRAL_BAND_GROUPS)        # same order score_image builds band_groups in
+    ctx.results["group_attribution"] = {}
+    print(f"\n  spectral attribution (per-group AUROC on TEST)")
+    print("    " + f"{'class':<12}" + "".join(f"{n:>14}" for n in names) + f"{'best':>14}")
+
+    for cls in ctx.scored:
+        per_group = {n: [] for n in names}
+        for m in ctx.scored[cls]["test"]:
+            g = m.get("group_recon")
+            if g is None or not (0 < m["mask"].mean() < 1):
+                continue                        # AUROC undefined on a single-class mask
+            y = m["mask"].ravel()
+            for gi, n in enumerate(names):
+                per_group[n].append(roc_auc(y, g[gi].ravel()))
+        if not per_group[names[0]]:
+            continue
+        means = {n: float(np.mean(v)) for n, v in per_group.items()}
+        best = max(means, key=means.get)
+        ctx.results["group_attribution"][cls] = {
+            "per_group_auroc": means,
+            "n_images": len(per_group[names[0]]),
+            "best_group": best,
+            "bands": {n: SPECTRAL_BAND_GROUPS[n] for n in names},
+        }
+        print("    " + f"{cls:<12}" + "".join(f"{means[n]:>14.4f}" for n in names) + f"{best:>14}")
+
+
 def report_alpha_sweeps(ctx):
     """
         Sensitivity curves (never used for selection).
@@ -760,8 +796,9 @@ def main():
     report_image_level(ctx)     # binary classification of whole images on TEST: normal vs anomalous
     report_false_alarms(ctx)    # compute the fraction of pixels flagged as anomalous in each normal TEST image, for each anomaly type
 
-    report_alpha_sweeps(ctx)    # sensitivity curves
-    run_baselines(ctx)          # classical baseline detectors on the same TEST images (PCA, RX, and SpectralLinearPredictor)
+    report_group_attribution(ctx)   # which band group detects which anomaly type
+    report_alpha_sweeps(ctx)        # sensitivity curves
+    run_baselines(ctx)              # classical baseline detectors on the same TEST images (PCA, RX, and SpectralLinearPredictor)
 
 
     save_score_maps(ctx)    # save a few maps per class for the qualitative figure

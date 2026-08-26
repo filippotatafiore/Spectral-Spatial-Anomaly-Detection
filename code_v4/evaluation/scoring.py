@@ -42,7 +42,6 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
     use_amp = device.type == "cuda"
 
     recon_map = np.empty(height * width, dtype=np.float32)
-    group_maps = (np.empty((len(band_groups) if band_groups else 1, height * width), dtype=np.float32) if SPECTRAL_MASK_MODE == "group" else None)
     entropy_map = np.empty(height * width, dtype=np.float32)
     received_map = np.empty(height * width, dtype=np.float32)
 
@@ -56,6 +55,10 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
         perm = torch.randperm(N_BANDS, generator=torch.Generator().manual_seed(0))
         band_groups = [perm[i::SPECTRAL_MASK_EVAL_GROUPS].to(device)
                        for i in range(SPECTRAL_MASK_EVAL_GROUPS)]
+
+
+    # one row per masked group, so the per-group errors can be kept apart
+    group_maps = (np.empty((len(band_groups), height * width), dtype=np.float32) if band_groups is not None else None)
 
     for ch in iter_all_centers(height, width, chunk, device):
         raw = extract_patches(batched, ch.unsqueeze(0), PATCH_SIZE)   # (1, n, T, C)

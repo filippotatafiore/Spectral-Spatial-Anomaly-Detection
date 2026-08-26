@@ -8,7 +8,7 @@ import platform
 import argparse
 
 from utils.globals import (
-    PATCH_SIZE, CENTERS_PER_IMAGE, LOSS_TOKENS,
+    PATCH_SIZE, N_TOKENS, CENTERS_PER_IMAGE, LOSS_TOKENS,
     SEED, VAL_SEED, MASK_CENTER, INPUT_NOISE_STD, FEATURE_DIM, SOURCE_BALANCE_POWER, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, N_BANDS, N_DCT_COEFFS, USE_RAW, USE_DCT,
     D_MODEL, N_HEADS, N_LAYERS, FFN_HIDDEN, DROPOUT, EMBED_HIDDEN, DECODER_HIDDEN, POS_ENCODING, LR, WEIGHT_DECAY,
     EPOCHS, WARMUP_STEPS, AMP, ARTIFACTS_DIR,
@@ -64,7 +64,7 @@ def training_step(model, builder, images, generator):
     # Corrupt the input (leave target clean) at training time (add gaussian noise to the features)
     if INPUT_NOISE_STD > 0 and model.training:
         features = features + torch.randn(features.shape, device=features.device, dtype=features.dtype, generator=generator) * INPUT_NOISE_STD
-    tokens = PATCH_SIZE * PATCH_SIZE
+    tokens = N_TOKENS
     features = features.reshape(-1, tokens, features.shape[-1])  # (B*N, T, F)
     target = target.reshape(-1, tokens, target.shape[-1])  # (B*N, T, C)
 

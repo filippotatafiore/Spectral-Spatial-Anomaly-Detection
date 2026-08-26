@@ -71,7 +71,7 @@ def extract_patches(images, centers, patch_size):
 
     # Gather the patches
     gathered = torch.gather(padded.reshape(batch, channels, -1), 2, flat_idx)  # (B, C, N*T)
-    gathered = gathered.reshape(batch, channels, n_centers, patch_size * patch_size)  # (B, C, N, T)
+    gathered = gathered.reshape(batch, channels, n_centers, offsets.shape[0])  # (B, C, N, T)
     return gathered.permute(0, 2, 3, 1).contiguous()  # (B, N, P*P, C) = (B, N, T, C)
 
 
