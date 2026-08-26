@@ -260,28 +260,42 @@ def select_pixel_thresholds(ctx):
         Choose one pixel-level decision threshold per class, on VAL, for the Anomaly Score.
 
         If Anomaly Score > threshold, then the pixel is flagged as anomalous.
+
+        Two candidate decision rules:
+            adaptive: threshold applied to the per-image standardised map
+            global: threshold applied to the raw score
     """
-    # Concatenate all normal VAL pixel scores
+    # Concatenate all standardised normal VAL pixel scores
     normal_pixel_scores = np.concatenate([standardize_map(ctx.score(m)).ravel() for m in ctx.normal_val_maps])
+    # Concatenate all raw normal VAL pixel scores
+    raw_normal_scores = np.concatenate([ctx.score(m).ravel() for m in ctx.normal_val_maps])
+
+    REF = {"adaptive": normal_pixel_scores, "global": raw_normal_scores}
+
+    def _mapped(m, mode):
+        """
+            Return the map to which the threshold will be applied, depending on the mode.
+        """
+        return standardize_map(ctx.score(m)) if mode == "adaptive" else ctx.score(m)
+
 
     for cls in ctx.scored:
+        usable = [m for m in ctx.scored[cls]["val"] if 0 < m["mask"].mean() < 1]
         best = None
-        for f in OP_FPR_GRID:  # try all quantile values of the normal pixel scores
-            thr = threshold_at_fpr(normal_pixel_scores, f)  # decision threshold chosen on normal VAL pixels
+        for mode in ("adaptive", "global"):
+            for f in OP_FPR_GRID:
+                thr = threshold_at_fpr(REF[mode], f)
+                f1s = [operating_point_metrics(_mapped(m, mode), m["mask"], thr)["op_f1"]
+                       for m in usable]
 
-            # Compute pixel-level metrics for each scored anomalous VAL image at current threshold and aggregate them per class
-            f1s = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], thr)["op_f1"]
-                   for m in ctx.scored[cls]["val"] if 0 < m["mask"].mean() < 1]
-
-            if f1s and (best is None or np.mean(f1s) > best[2]):
-                best = (f, thr, float(np.mean(f1s)))
+                if f1s and (best is None or np.mean(f1s) > best[3]):
+                    best = (mode, f, thr, float(np.mean(f1s)))
 
         if best is None:
-            best = (OP_TARGET_FPR, threshold_at_fpr(normal_pixel_scores, OP_TARGET_FPR), float("nan"))
+            best = ("adaptive", OP_TARGET_FPR, threshold_at_fpr(normal_pixel_scores, OP_TARGET_FPR), float("nan"))
 
-        # Store the selected threshold for this class
-        ctx.pixel_thresholds[cls] = {"target_fpr": best[0], "value": best[1], "val_op_f1": best[2]}
-        print(f"  {cls:<12} pixel operating point on val: FPR={best[0]:.0%} thr={best[1]:.4f} (val op_F1 {best[2]:.4f})")
+        ctx.pixel_thresholds[cls] = {"mode": best[0], "target_fpr": best[1], "value": best[2], "val_op_f1": best[3]}
+        print(f"  {cls:<12} pixel operating point on val: rule={best[0]:<8} FPR={best[1]:.0%} thr={best[2]:.4f} (val op_F1 {best[3]:.4f})")
 
     ctx.results["pixel_thresholds"] = ctx.pixel_thresholds
 
@@ -293,17 +307,17 @@ def select_pixel_thresholds(ctx):
     pooled_val = [m for cls in ctx.scored if cls not in SELECTION_EXCLUDE
                   for m in ctx.scored[cls]["val"] if 0 < m["mask"].mean() < 1]
     best = None
-    for f in OP_FPR_GRID:
-        thr = threshold_at_fpr(normal_pixel_scores, f)
-        f1s = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], thr)["op_f1"]
-               for m in pooled_val]
+    for mode in ("adaptive", "global"):
+        for f in OP_FPR_GRID:
+            thr = threshold_at_fpr(REF[mode], f)
+            f1s = [operating_point_metrics(_mapped(m, mode), m["mask"], thr)["op_f1"]
+                   for m in pooled_val]
 
-        if f1s and (best is None or np.mean(f1s) > best[2]):
-            best = (f, thr, float(np.mean(f1s)))
+            if f1s and (best is None or np.mean(f1s) > best[3]):
+                best = (mode, f, thr, float(np.mean(f1s)))
     if best:
-        ctx.pixel_thresholds["__pooled__"] = {"target_fpr": best[0], "value": best[1], "val_op_f1": best[2]}
-        print(f"  {'POOLED':<12} pixel operating point on val: FPR={best[0]:.0%} "
-              f"thr={best[1]:.4f} (val op_F1 {best[2]:.4f})")
+        ctx.pixel_thresholds["__pooled__"] = {"mode": best[0], "target_fpr": best[1], "value": best[2], "val_op_f1": best[3]}
+        print(f"  {'POOLED':<12} pixel operating point on val: rule={best[0]:<8} FPR={best[1]:.0%} thr={best[2]:.4f} (val op_F1 {best[3]:.4f})")
 
 
 
@@ -319,8 +333,10 @@ def report_pixel_level(ctx):
         thr = ctx.pixel_thresholds[cls]["value"]
         # class-agnostic threshold (selected on VAL pooled over all classes)
         pooled_thr = ctx.pixel_thresholds.get("__pooled__", {}).get("value", thr)
-        # Pixel-level metrics at the selected threshold
-        ops = [operating_point_metrics(standardize_map(ctx.score(m)), m["mask"], thr)
+        # Pixel-level metrics at the selected threshold, under the rule chosen on val.
+        mode = ctx.pixel_thresholds[cls].get("mode", "adaptive")
+        _m = lambda mm: standardize_map(ctx.score(mm)) if mode == "adaptive" else ctx.score(mm)
+        ops = [operating_point_metrics(_m(m), m["mask"], thr)
                for m in ctx.scored[cls]["test"] if 0 < m["mask"].mean() < 1]
         
         op_mean = {k: float(np.mean([o[k] for o in ops])) for k in ops[0]} if ops else {}
@@ -343,8 +359,8 @@ def report_pixel_level(ctx):
         # Handle skipped images (with single-class masks, AUROC undefined)
         saturated = [m for m in ctx.scored[cls]["test"] if m["mask"].mean() == 1]  # all pixels are anomalous
         empty = [m for m in ctx.scored[cls]["test"] if m["mask"].mean() == 0]  # all pixels are normal
-        sat_recall = [float((standardize_map(ctx.score(m)) >= thr).mean()) for m in saturated]  # fraction of pixels flagged as anomalous in saturated images
-        empty_fpr = [float((standardize_map(ctx.score(m)) >= thr).mean()) for m in empty]  # fraction of pixels flagged as anomalous in empty images
+        sat_recall = [float((_m(m) >= thr).mean()) for m in saturated]
+        empty_fpr = [float((_m(m) >= thr).mean()) for m in empty]
 
         n_skip = len(ctx.scored[cls]["test"]) - len(recs)
 
@@ -516,8 +532,10 @@ def report_false_alarms(ctx):
     ctx.results["normal_scene_false_alarms"] = {}
     for cls in ctx.scored:
         thr = ctx.pixel_thresholds[cls]["value"]
-        rates = [float((standardize_map(ctx.score(m)) >= thr).mean())
+        _mode = ctx.pixel_thresholds[cls].get("mode", "adaptive")
+        rates = [float(((standardize_map(ctx.score(m)) if _mode == "adaptive" else ctx.score(m)) >= thr).mean())
                  for m in ctx.normal_test_maps]
+        
         ctx.results["normal_scene_false_alarms"][cls] = {
             "mean_fraction_flagged": float(np.mean(rates)),
             "median_fraction_flagged": float(np.median(rates)),
@@ -526,6 +544,27 @@ def report_false_alarms(ctx):
         }
         print(f"  {cls:<12} clean-scene false alarms: {np.mean(rates):.1%} of pixels "
               f"(p90 {np.percentile(rates, 90):.1%})")
+
+    # How well the flagged fraction tracks the amount of anomaly actually present
+    truth, flagged = [], []
+    for cls in ctx.scored:
+        thr_c = ctx.pixel_thresholds[cls]["value"]
+        mode_c = ctx.pixel_thresholds[cls].get("mode", "adaptive")
+        
+        for m in ctx.scored[cls]["test"]:
+            s = standardize_map(ctx.score(m)) if mode_c == "adaptive" else ctx.score(m)
+            truth.append(float(m["mask"].mean()))
+            flagged.append(float((s >= thr_c).mean()))
+
+    if len(truth) > 2 and np.std(flagged) > 1e-9:
+        ctx.results["flagged_fraction_diagnostic"] = {
+            "mean_flagged": float(np.mean(flagged)),
+            "std_flagged": float(np.std(flagged)),
+            "corr_with_true_base_rate": float(np.corrcoef(truth, flagged)[0, 1]),
+            "n_images": len(truth),
+        }
+        print(f"  flagged fraction: mean {np.mean(flagged):.3f} std {np.std(flagged):.3f} "
+              f"corr with true base rate {np.corrcoef(truth, flagged)[0, 1]:+.3f}")
 
 
 def report_alpha_sweeps(ctx):
@@ -594,7 +633,9 @@ def save_score_maps(ctx):
         usable = [m for m in ctx.scored[cls]["test"]
                   if 0 < m["mask"].mean() < 1] or ctx.scored[cls]["test"]
         for m in usable[:SAVE_MAPS_PER_CLASS]:
-            s = standardize_map(ctx.score(m))
+            s = (standardize_map(ctx.score(m))
+                 if ctx.pixel_thresholds[cls].get("mode", "adaptive") == "adaptive"
+                 else ctx.score(m))
             np.savez_compressed(
                 maps_dir / f"{cls}_{m['name']}.npz",
                 fused=s,
@@ -603,8 +644,9 @@ def save_score_maps(ctx):
                 received=m["center_received"], mask=m["mask"],
             )
     
+    _pmode = ctx.pixel_thresholds.get("__pooled__", {}).get("mode", "adaptive")
     for m in ctx.normal_test_maps[:SAVE_MAPS_PER_CLASS]:
-        s = standardize_map(ctx.score(m))
+        s = standardize_map(ctx.score(m)) if _pmode == "adaptive" else ctx.score(m)
         # Use the class-agnostic threshold
         thr = ctx.pixel_thresholds.get("__pooled__", {}).get(
             "value", float(np.median([t["value"] for t in ctx.pixel_thresholds.values()])))
