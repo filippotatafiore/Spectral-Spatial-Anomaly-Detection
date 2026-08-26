@@ -54,6 +54,7 @@ SPECTRAL_BAND_GROUPS:         # physical groups (as indices into BANDS)
   VIS:         [0, 1, 2, 3]         # B1  B2  B3  B4
   REDEDGE_NIR: [4, 5, 6, 7, 8]      # B5  B6  B7  B8  B8A
   SWIR:        [9, 10, 11]          # B9  B11 B12
+MASK_INDICATOR: true          # append a 12-dimensional binary flag per token, marking which bands are hidden
 
 INPUT_NOISE_STD: 0.0          # std of Gaussian noise added to the standardized input features during training (avoid identity mapping) (0.0 = off)
 

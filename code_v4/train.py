@@ -57,8 +57,8 @@ def training_step(model, builder, images, generator):
     if hidden is not None:
         raw_masked = raw.clone()
         raw_masked[..., hidden] = builder.band_mean[hidden]
-        features, _ = builder(raw_masked)   # bands hidden
-        _, target = builder(raw)            # original values
+        features, _ = builder(raw_masked, hidden=hidden)   # bands hidden
+        _, target = builder(raw)  # original values
     else:
         features, target = builder(raw)  # (B, N, T, F), (B, N, T, C)
     # Corrupt the input (leave target clean) at training time (add gaussian noise to the features)

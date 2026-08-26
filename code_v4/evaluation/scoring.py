@@ -74,7 +74,7 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS):
             for gi, hidden in enumerate(band_groups):
                 raw_m = raw.clone()
                 raw_m[..., hidden] = builder.band_mean[hidden]
-                feats, _ = builder(raw_m)
+                feats, _ = builder(raw_m, hidden=hidden)
                 feats = feats.reshape(-1, N_TOKENS, feats.shape[-1])
                 with torch.autocast("cuda", enabled=use_amp):
                     o = model(feats, need_attn_stats=True)

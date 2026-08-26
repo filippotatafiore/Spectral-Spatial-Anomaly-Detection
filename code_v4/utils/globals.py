@@ -79,7 +79,8 @@ N_DCT_COEFFS = config["N_DCT_COEFFS"]
 USE_RAW = config["USE_RAW"]
 USE_DCT = config["USE_DCT"]
 
-FEATURE_DIM = (N_BANDS if USE_RAW else 0) + (N_DCT_COEFFS if USE_DCT else 0)    # C + K = F, features dimension
+MASK_INDICATOR = bool(config.get("MASK_INDICATOR", False))
+FEATURE_DIM = ((N_BANDS if USE_RAW else 0) + (N_DCT_COEFFS if USE_DCT else 0) + (N_BANDS if MASK_INDICATOR else 0))    # F = C + K (+ C * mask flags)
 
 
 # --------------------------- model

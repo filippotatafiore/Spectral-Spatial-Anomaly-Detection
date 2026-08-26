@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.globals import TOKEN_OFFSETS, TOKEN_PAD, CENTER_TOKEN
+from utils.globals import TOKEN_OFFSETS, TOKEN_PAD, CENTER_TOKEN, MASK_INDICATOR
 
 
 def center_token_index(patch_size):
@@ -148,9 +148,10 @@ class FeatureBuilder(nn.Module):
         self.register_buffer("band_mean", torch.as_tensor(feature_mean[:num_bands], dtype=torch.float32))
         self.register_buffer("band_std", torch.as_tensor(feature_std[:num_bands], dtype=torch.float32))
 
-    def forward(self, raw_patches):
-        # raw_patches: (batch_size, num_centers, P*P, C) = (B, N, T, C)
-        
+    def forward(self, raw_patches, hidden=None):
+        # raw_patches: (batch_size, num_centers, T, C) = (B, N, T, C)
+        # hidden: masked band indices
+
         parts = []
         if self.use_raw:
             parts.append(raw_patches)  # raw patches: (B, N, T, C)
@@ -160,7 +161,14 @@ class FeatureBuilder(nn.Module):
         # Concatenate features along the last dimension
         features = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]  # (B, N, T, C+K)
         # Standardization
-        features = (features - self.mean) / self.std  # (B, N, T, C+K) = (B, N, T, F)
+        features = (features - self.mean) / self.std  # (B, N, T, C+K)
+
+        # Append a binary flag per token, marking which bands are hidden
+        if MASK_INDICATOR:
+            flag = torch.zeros(raw_patches.shape[:-1] + (self.num_bands,), device=raw_patches.device, dtype=features.dtype)
+            if hidden is not None:
+                flag[..., hidden] = 1.0
+            features = torch.cat([features, flag], dim=-1)  # (B, N, T, C+K+C)
 
         if self.use_raw:
             target = features[..., : self.num_bands].clone()  # (B, N, T, C)
