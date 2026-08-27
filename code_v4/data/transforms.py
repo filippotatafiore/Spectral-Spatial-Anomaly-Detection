@@ -4,24 +4,49 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.globals import TOKEN_OFFSETS, TOKEN_PAD, CENTER_TOKEN, MASK_INDICATOR
+from utils.globals import MULTISCALE_OUTER, MULTISCALE_STRIDE, MASK_INDICATOR
 
 
-def center_token_index(patch_size):
+def token_offsets(patch_size, outer=None, stride=None):
+    """
+        Geometry of the token set, computed from the ARGUMENTS.
+
+        Dense core: every position within radius patch_size//2.
+        Sparse ring: an outer x outer neighbourhood on a stride grid, keeping only positions outside the dense core.
+        outer=0 (or <= patch_size) gives the plain dense patch.
+
+        Returns (offsets, centre_index, pad) with offsets relative to the centre.
+    """
+    outer = MULTISCALE_OUTER if outer is None else outer
+    stride = MULTISCALE_STRIDE if stride is None else stride
+    r = patch_size // 2
+    pts = [(dr, dc) for dr in range(-r, r + 1) for dc in range(-r, r + 1)]
+    if outer > patch_size and stride > 0:
+        R = outer // 2
+        for dr in range(-R, R + 1, stride):
+            for dc in range(-R, R + 1, stride):
+                if max(abs(dr), abs(dc)) > r:
+                    pts.append((dr, dc))
+    pad = max(max(abs(a), abs(b)) for a, b in pts)
+    return pts, pts.index((0, 0)), pad
+
+
+def center_token_index(patch_size, outer=None, stride=None):
     """
         patch_size = P
         Index of the centre pixel among the tokens.
     """
-    return CENTER_TOKEN
+    return token_offsets(patch_size, outer, stride)[1]
 
 
-def token_coords(patch_size, device=None):
+def token_coords(patch_size, device=None, outer=None, stride=None):
     """
-        (row, col) coordinates of every token.
+        (row, col) coordinates of every token, shifted so the minimum is 0.
         With multi-scale sampling this is not a dense P x P grid.
         It is the dense core plus a strided outer ring.
     """
-    return torch.tensor(TOKEN_OFFSETS, dtype=torch.long, device=device)  # (T, 2)
+    pts, _, pad = token_offsets(patch_size, outer, stride)
+    return torch.tensor([(a + pad, b + pad) for a, b in pts], dtype=torch.long, device=device)
 
 
 def sample_centers(n_images, height, width, n_centers, device, generator=None):
@@ -44,7 +69,7 @@ def iter_all_centers(height, width, chunk, device):
         yield torch.arange(start, min(start + chunk, total), device=device, dtype=torch.long)  # (chunk,)
 
 
-def extract_patches(images, centers, patch_size):
+def extract_patches(images, centers, patch_size, outer=None, stride=None):
     """
         Extract P x P pixel-centered patches
 
@@ -55,7 +80,7 @@ def extract_patches(images, centers, patch_size):
     batch, channels, height, width = images.shape  # (B, 12, 120, 120)
 
     # Pad by the largest token offset
-    pad = TOKEN_PAD
+    _, _, pad = token_offsets(patch_size, outer, stride)
     padded = F.pad(images, (pad, pad, pad, pad), mode="reflect")  # (B, C, H+2*pad, W+2*pad)
     padded_w = width + 2 * pad
 
@@ -65,7 +90,7 @@ def extract_patches(images, centers, patch_size):
     cols = centers % width
 
     # Flat indices of every token of the patches
-    offsets = token_coords(patch_size, device=images.device)  # (P*P, 2)
+    offsets = token_coords(patch_size, device=images.device, outer=outer, stride=stride)  # (T, 2)
     flat_idx = (rows.unsqueeze(-1) + offsets[:, 0]) * padded_w + (cols.unsqueeze(-1) + offsets[:, 1])  # (B, N, P*P) = (B, N, T)
     flat_idx = flat_idx.reshape(batch, 1, -1).expand(batch, channels, -1)  # (B, C, N*T)
 
