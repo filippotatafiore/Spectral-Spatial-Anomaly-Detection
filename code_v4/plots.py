@@ -8,7 +8,7 @@
 """
 
 # version of the model used to generate the artifacts
-MODEL_VERSION = "v3"
+MODEL_VERSION = "v4"
 MODEL_RUN = "0"
 
 
