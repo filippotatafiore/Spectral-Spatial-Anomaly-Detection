@@ -28,7 +28,7 @@ from utils.globals import (
     N_DCT_COEFFS, N_HEADS, N_LAYERS, N_TOKENS, PATCH_SIZE, PCA_COMPONENTS, POS_ENCODING,
     SAVE_MAPS_PER_CLASS, SEED, SELECTION_EXCLUDE, REPORT_EXCLUDE, TEST_CLASSES, USE_DCT, USE_RAW,
     SPECTRAL_MASK_N, SPECTRAL_MASK_EVAL_GROUPS, LOCAL_CLASSES, SCENE_CLASSES,
-    SPECTRAL_BAND_GROUPS,
+    SPECTRAL_BAND_GROUPS, BETA_GRID,
     images_per_class,
 )
 
@@ -77,8 +77,10 @@ class Ctx:
 
     # filled by calibrate / select_fusion
     recon_scaler: object = None
-    attn_scalers: dict = field(default_factory=dict)
+    attn_scalers: dict = field(default_factory=dict)    
+    svdd_scaler: object = None
     alpha: float = None
+    beta: float = None
     variant: str = None
     sign: float = None
 
@@ -90,21 +92,23 @@ class Ctx:
     results: dict = field(default_factory=dict)
 
 
-    def score(self, maps, alpha=None, variant=None, sign=None):
+    def score(self, maps, alpha=None, variant=None, sign=None, beta=None):
         """
             Compute anomaly score for one image.
         """
         a = self.alpha if alpha is None else alpha
         v = self.variant if variant is None else variant
         g = self.sign if sign is None else sign
+        b = self.beta if beta is None else beta
         attn = attention_statistic(maps, v, N_TOKENS)
-        return fuse(maps["recon"], attn, a, self.recon_scaler, self.attn_scalers[v], g)  # Anomaly Score
+        return fuse(maps["recon"], attn, maps["svdd"], a, b,
+                    self.recon_scaler, self.attn_scalers[v], self.svdd_scaler, g)
 
-    def image_score(self, maps, stat, alpha=None, variant=None, sign=None):
+    def image_score(self, maps, stat, alpha=None, variant=None, sign=None, beta=None):
         """
             Compute one single score per image, using one of IMG_STATS.
         """
-        return IMG_STATS[stat](self.score(maps, alpha, variant, sign))
+        return IMG_STATS[stat](self.score(maps, alpha, variant, sign, beta))
 
 
 
@@ -124,6 +128,7 @@ def build_context(args):
 
     # Load the model weights (unless random_init)
     if args.random_init:
+        ctx_svdd_center = None
         print("RANDOM-INIT CONTROL (untrained weights)")
     else:
         ckpt_path = args.ckpt or (ARTIFACTS_DIR / "best.pt")
@@ -148,6 +153,9 @@ def build_context(args):
 
     # Build the context object
     ctx = Ctx(args=args, device=device, stats=stats, model=model, builder=builder, tag=tag)
+
+    ctx.svdd_center = ctx_svdd_center
+
     ctx.results = {
         "tag": tag,
         "split_fingerprint": split_fingerprint(),
@@ -199,9 +207,13 @@ def calibrate(ctx):
             [attention_statistic(m, v, N_TOKENS).ravel() for m in ctx.normal_val_maps]))
         for v in ATTN_VARIANTS
     }
+    # Fit SVDD scaler
+    _sv = np.concatenate([m["svdd"].ravel() for m in ctx.normal_val_maps])
+    ctx.svdd_scaler = RobustScaler.fit(_sv) if _sv.std() > 1e-12 else RobustScaler(0.0, 1.0)
 
     ctx.results["calibration"] = {
         "recon": ctx.recon_scaler.to_dict(),
+        "svdd": ctx.svdd_scaler.to_dict(),
         **{f"attn_{v}": s.to_dict() for v, s in ctx.attn_scalers.items()}
     }
 
@@ -228,19 +240,23 @@ def select_fusion(ctx):
         Choose on VAL the parameters for the Anomaly Score (alpha, attention variant, and sign).
     """
     if ctx.args.fixed_alpha is not None:
-        selection = {"alpha": ctx.args.fixed_alpha, "variant": ATTN_VARIANTS[0], "sign": 1.0,
-                     "val_macro_auroc": None, "note": "alpha fixed on the command line"}
+        selection = {"alpha": ctx.args.fixed_alpha, "beta": 1.0 - ctx.args.fixed_alpha,
+                     "variant": ATTN_VARIANTS[0], "sign": 1.0,
+                     "val_macro_auroc": None}
     else:
         best = None
         for variant in ATTN_VARIANTS:   # try all attention variants (entropy or received)
             for sign in SIGNS:            # try both signs for the attention outlier
-                for alpha in ALPHA_GRID:    # try all alpha values (weighting of ReconError vs AttentionOutlier)
+                for alpha in ALPHA_GRID:    # weight of ReconError
+                  for beta in BETA_GRID:   # weight of AttentionOutlier
+                    if alpha + beta > 1.0:  # remainder is the compactness weight
+                        continue
 
                     # Compute pixel-level metrics for each scored anomalous VAL image and aggregate them per class
                     per_class = {}
                     for cls in ctx.scored:
                         # Compute pixel-level metrics for each image in ctx.scored[cls]["val"]
-                        recs = evaluate(ctx, ctx.scored[cls]["val"], alpha, variant, sign)
+                        recs = evaluate(ctx, ctx.scored[cls]["val"], alpha, variant, sign, beta=beta)
                         # Aggregate the metrics over images of the same class
                         if recs:
                             per_class[cls] = aggregate(recs)
@@ -250,13 +266,15 @@ def select_fusion(ctx):
 
                     # best combination
                     if best is None or score > best["val_macro_auroc"]:
-                        best = {"alpha": alpha, "variant": variant, "sign": sign, "val_macro_auroc": score}
+                        best = {"alpha": alpha, "beta": beta, "variant": variant, "sign": sign,
+                                "val_macro_auroc": score}
 
         selection = best
         print(f"\nSelected on VAL (excluding {SELECTION_EXCLUDE}): {selection}")
 
     # Store the selection
     ctx.alpha, ctx.variant, ctx.sign = selection["alpha"], selection["variant"], selection["sign"]
+    ctx.beta = selection["beta"]
     ctx.results["selection"] = selection
 
 

@@ -110,13 +110,13 @@ def per_image_metrics(score, mask):
     }
 
 
-def evaluate(ctx, maps_list, alpha=None, variant=None, sign=None, with_3d_roc=False):
+def evaluate(ctx, maps_list, alpha=None, variant=None, sign=None, beta=None, with_3d_roc=False):
     """
         Compute pixel-level metrics for each image in maps_list.
     """
     records = []
     for m in maps_list:
-        s = ctx.score(m, alpha, variant, sign)  # Anomaly Score for image m
+        s = ctx.score(m, alpha, variant, sign, beta)  # Anomaly Score for image m
         r = per_image_metrics(s, m["mask"])  # Pixel-level metrics for image m
 
         if r is None:  # AUROC undefined (mask is entirely one class)

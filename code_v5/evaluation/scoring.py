@@ -67,6 +67,7 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS, svdd_center=N
         target = target.reshape(-1, N_TOKENS, target.shape[-1])
         lo, hi = int(ch[0]), int(ch[-1]) + 1
 
+        svdd_chunk = None
         if band_groups is None:
             features, _ = builder(raw)
             features = features.reshape(-1, N_TOKENS, features.shape[-1])
@@ -99,7 +100,7 @@ def score_image(model, builder, image, device, chunk=CHUNK_PIXELS, svdd_center=N
             err = err / N_BANDS                  # every band contributed exactly once
 
         recon_map[lo:hi] = err.cpu().numpy()
-        svdd_map[lo:hi] = (svdd_chunk.cpu().numpy() if svdd_center is not None else np.zeros(hi - lo, dtype=np.float32))
+        svdd_map[lo:hi] = (svdd_chunk.cpu().numpy() if svdd_chunk is not None else np.zeros(hi - lo, dtype=np.float32))
         if group_maps is not None:
             group_maps[:, lo:hi] = group_err.cpu().numpy()
         entropy_map[lo:hi] = out["center_entropy"].float().cpu().numpy()
