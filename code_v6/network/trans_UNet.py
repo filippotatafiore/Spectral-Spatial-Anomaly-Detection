@@ -85,7 +85,7 @@ class TransUNetSentinel2(nn.Module):
 
         # --- Classification Branch
         # Classification logits
-        cls_logits = self.cls_head(cls_token_out).squeeze(-1) # (B,)
+        cls_logits = self.cls_head(cls_token_out).view(-1)  # (B)
 
 
         # --- Anomaly Localization Branch

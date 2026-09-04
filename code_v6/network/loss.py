@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
 
+
 class DiceLoss(nn.Module):
     """
         Dice Loss: difference between a predicted mask and a target mask
-
         Dice Loss = 1 - (2 * intersection + smooth) / (union + smooth)
+
+        Computes Dice Loss per sample and averages across the batch.
     """
 
     def __init__(self, smooth=1e-6):
@@ -13,12 +15,12 @@ class DiceLoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, logits, targets):
-        probs = torch.sigmoid(logits).view(-1)
-        targets = targets.view(-1)
+        probs = torch.sigmoid(logits)  # (B, H, W)
+        intersection = (probs * targets).sum(dim=(1, 2))
+        cardinality = probs.sum(dim=(1, 2)) + targets.sum(dim=(1, 2))
+        dice = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
+        return torch.mean(1.0 - dice)
 
-        intersection = (probs * targets).sum()
-        dice = (2. * intersection + self.smooth) / (probs.sum() + targets.sum() + self.smooth)
-        return 1.0 - dice
 
 
 class MultiTaskLoss(nn.Module):

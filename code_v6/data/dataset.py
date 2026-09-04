@@ -23,6 +23,22 @@ def _load_image(path, clip=CLIP_REFLECTANCE):
     return torch.from_numpy(arr)  # (12, 120, 120) = (C, H, W)
 
 
+def _load_mask(path):
+    """
+        Load (120, 120) float32 anomaly mask from .npy file.
+        If the mask file does not exist, return a zero mask.
+    """
+
+    mask_path = path.parent / f"{path.stem}_mask.npy"
+    if mask_path.exists():
+        mask = np.load(mask_path)
+        mask = np.nan_to_num(mask, nan=0.0)
+        return torch.from_numpy(mask).float()
+    else:
+        # Normal image without anomaly mask
+        return torch.zeros((120, 120), dtype=torch.float32)
+
+
 class NormalImagesDataset(Dataset):
     """
         Unlabelled normal images, for unsupervised training.

@@ -16,6 +16,15 @@ GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in 
 
 CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
 
+
+# --------------------------- model
+IN_CHANNELS: 12         # number of input channels (12 BANDS)
+EMBED_DIM: 512          # embedding dimension (output dim of the CNN encoder, dim of the transformer)
+NUM_ATT_HEADS: 8        # number of attention heads in the transformer
+NUM_TRANS_LAYERS: 4     # number of transformer layers
+DROPOUT: 0.1            # transformer dropout rate
+
+
 # --------------------------- train
 EPOCHS: 50
 BATCH_IMAGES: 8

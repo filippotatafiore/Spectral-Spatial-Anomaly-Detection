@@ -45,6 +45,14 @@ GROUPED_SPLIT = config.get("GROUPED_SPLIT", False)
 CLIP_REFLECTANCE = config["CLIP_REFLECTANCE"]
 
 
+# --------------------------- model
+IN_CHANNELS = config["IN_CHANNELS"]
+EMBED_DIM = config["EMBED_DIM"]
+NUM_ATT_HEADS = config["NUM_ATT_HEADS"]
+NUM_TRANS_LAYERS = config["NUM_TRANS_LAYERS"]
+DROPOUT = config["DROPOUT"]
+
+
 # --------------------------- train
 EPOCHS = config["EPOCHS"]
 BATCH_IMAGES = config["BATCH_IMAGES"]

@@ -5,6 +5,7 @@ from network.loss import MultiTaskLoss
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, EPOCHS, LR, WEIGHT_DECAY,
     SOURCE_BALANCE_POWER, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
+    IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
 )
 from network.trans_UNet import TransUNetSentinel2
 from data.dataset import make_loader, make_source_weights, NormalImagesDataset
@@ -104,7 +105,10 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
                 val_cls_targets.extend(cls_targets.cpu().numpy())
 
         val_loss /= len(val_loader)
-        val_auc = roc_auc_score(val_cls_targets, val_cls_preds)
+        try:
+            val_auc = roc_auc_score(val_cls_targets, val_cls_preds)
+        except ValueError:  # Fallback if only one class is present in validation batch
+            val_auc = 0.5
 
         print(f"Epoch [{epoch:02d}/{epochs:02d}] | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Image AUC: {val_auc:.4f}")
 
@@ -123,7 +127,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
 
 
 def main():
-    model = TransUNetSentinel2(in_channels=12, embed_dim=512, num_heads=8, num_layers=4, dropout=0.1)
+    model = TransUNetSentinel2(in_channels=IN_CHANNELS, embed_dim=EMBED_DIM, num_heads=NUM_ATT_HEADS, num_layers=NUM_TRANS_LAYERS, dropout=DROPOUT)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {n_params:,}")
 
