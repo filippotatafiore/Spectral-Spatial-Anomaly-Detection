@@ -1,5 +1,6 @@
 import torch
 from sklearn.metrics import roc_auc_score
+import json
 
 from network.loss import MultiTaskLoss
 from utils.globals import (
@@ -13,6 +14,8 @@ from utils.splits import split_normals
 
 
 def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, device='cuda'):
+    if isinstance(device, str):
+        device = torch.device(device)
     checkpoint = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -28,14 +31,16 @@ def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_a
 
 
 def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_decay=1e-4, device='cuda'):
+    if isinstance(device, str):
+        device = torch.device(device)
 
-    # --- Build model
+    # ------ Model
     model = model.to(device)
 
-    # --- Loss function
+    # ------ Loss function
     criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0)
 
-    # --- Optimizer
+    # ------ Optimizer
     decay_params, no_decay_params = [], []
     for name, param in model.named_parameters():  # weight decay only on convolutional layers, not on biases or batchnorm
         if not param.requires_grad:
@@ -50,21 +55,39 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
     )
     print(f"Weight decay on {len(decay_params)} tensors (none on {len(no_decay_params)})")
 
-    # --- Learning rate scheduler
+    # ------ Learning rate scheduler
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # --- Mixed precision scaler
+    # ------ Mixed precision scaler
     use_amp = AMP and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-    # --- Training loop
+    # ------ Training loop
+    # Metrics History Tracker
+    history = {
+        "epoch": [],
+        "train_loss": [],
+        "train_loss_cls": [],
+        "train_loss_seg_bce": [],
+        "train_loss_seg_dice": [],
+        "val_loss": [],
+        "val_loss_cls": [],
+        "val_loss_seg_bce": [],
+        "val_loss_seg_dice": [],
+        "val_auc": [],
+        "lr": []
+    }
+
     best_val_auc = 0.0
     for epoch in range(1, epochs + 1):
 
-        # --- Train
+        # ------ Train
         model.train()
         train_loss = 0.0
-        
+        train_loss_cls = 0.0
+        train_loss_seg_bce = 0.0
+        train_loss_seg_dice = 0.0
+
         for images, cls_targets, seg_targets in train_loader:
             images = images.to(device)
             cls_targets = cls_targets.to(device)
@@ -72,7 +95,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
 
             optimizer.zero_grad()
             
-            with torch.autocast(device_type=device):
+            with torch.autocast(device_type=device.type, enabled=use_amp):
                 cls_logits, seg_logits = model(images)
                 loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_targets, seg_targets)
 
@@ -81,13 +104,25 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
             scaler.update()
 
             train_loss += loss.item()
+            train_loss_cls += l_cls.item()
+            train_loss_seg_bce += l_bce.item()
+            train_loss_seg_dice += l_dice.item()
 
         scheduler.step()
-        train_loss /= len(train_loader)
 
-        # --- Validation
+        # Compute averages for training epoch
+        n_train_batches = len(train_loader)
+        train_loss /= n_train_batches
+        train_loss_cls /= n_train_batches
+        train_loss_seg_bce /= n_train_batches
+        train_loss_seg_dice /= n_train_batches
+
+        # ------ Validation
         model.eval()
         val_loss = 0.0
+        val_loss_cls = 0.0
+        val_loss_seg_bce = 0.0
+        val_loss_seg_dice = 0.0
         val_cls_preds, val_cls_targets = [], []
         
         with torch.no_grad():
@@ -96,21 +131,57 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
                 cls_targets = cls_targets.to(device)
                 seg_targets = seg_targets.to(device)
 
-                with torch.autocast(device_type=device):
+                with torch.autocast(device_type=device.type, enabled=use_amp):
                     cls_logits, seg_logits = model(images)
-                    loss, _, _, _ = criterion(cls_logits, seg_logits, cls_targets, seg_targets)
+                    loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_targets, seg_targets)
 
                 val_loss += loss.item()
+                val_loss_cls += l_cls.item()
+                val_loss_seg_bce += l_bce.item()
+                val_loss_seg_dice += l_dice.item()
+
                 val_cls_preds.extend(torch.sigmoid(cls_logits).cpu().numpy())
                 val_cls_targets.extend(cls_targets.cpu().numpy())
 
-        val_loss /= len(val_loader)
+        # Compute averages for validation epoch
+        n_val_batches = len(val_loader)
+        val_loss /= n_val_batches
+        val_loss_cls /= n_val_batches
+        val_loss_seg_bce /= n_val_batches
+        val_loss_seg_dice /= n_val_batches
+
         try:
             val_auc = roc_auc_score(val_cls_targets, val_cls_preds)
         except ValueError:  # Fallback if only one class is present in validation batch
             val_auc = 0.5
 
-        print(f"Epoch [{epoch:02d}/{epochs:02d}] | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Image AUC: {val_auc:.4f}")
+        current_lr = optimizer.param_groups['lr']
+
+        # Log to history
+        history["epoch"].append(epoch)
+        history["train_loss"].append(train_loss)
+        history["train_loss_cls"].append(train_loss_cls)
+        history["train_loss_seg_bce"].append(train_loss_seg_bce)
+        history["train_loss_seg_dice"].append(train_loss_seg_dice)
+        history["val_loss"].append(val_loss)
+        history["val_loss_cls"].append(val_loss_cls)
+        history["val_loss_seg_bce"].append(val_loss_seg_bce)
+        history["val_loss_seg_dice"].append(val_loss_seg_dice)
+        history["val_auc"].append(val_auc)
+        history["lr"].append(current_lr)
+
+        # Save incrementally to json
+        metrics_file = ARTIFACTS_DIR / "training_metrics.json"
+        with metrics_file.open("w", encoding="utf-8") as f:
+            json.dump(history, f, indent=4)
+
+        print(
+            f"Epoch [{epoch:02d}/{epochs:02d}] | "
+            f"Train Loss: {train_loss:.4f} (Cls: {train_loss_cls:.3f}, Seg BCE: {train_loss_seg_bce:.3f}, Dice: {train_loss_seg_dice:.3f}) | "
+            f"Val Loss: {val_loss:.4f} | "
+            f"Val Image AUC: {val_auc:.4f} | "
+            f"LR: {current_lr:.2e}"
+        )
 
         # Checkpoint saving
         if val_auc > best_val_auc:
@@ -123,7 +194,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         elif epoch % 10 == 0:
             save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", device=device)
 
-    print(f"\nTraining Complete.\tBest Validation Image AUC-ROC: {best_val_auc:.4f}")
+    print(f"\nTraining Complete. Best Validation Image AUC-ROC: {best_val_auc:.4f}")
 
 
 def main():

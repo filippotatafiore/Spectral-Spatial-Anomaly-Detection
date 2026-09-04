@@ -101,7 +101,7 @@ def run_test_evaluation(checkpoint_name="best.pth"):
             
             for imgs in norm_loader:
                 imgs = imgs.to(DEVICE)
-                with torch.cuda.amp.autocast(enabled=AMP):
+                with torch.autocast(device_type=DEVICE, enabled=AMP):
                     cls_logits, seg_logits = model(imgs)
                 
                 cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
@@ -128,7 +128,7 @@ def run_test_evaluation(checkpoint_name="best.pth"):
             seg_targets_class, seg_preds_class = [], []
             for imgs, masks in cls_loader:
                 imgs = imgs.to(DEVICE)
-                with torch.cuda.amp.autocast(enabled=AMP):
+                with torch.autocast(device_type=DEVICE, enabled=AMP):
                     cls_logits, seg_logits = model(imgs)
 
                 cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
@@ -178,4 +178,4 @@ def run_test_evaluation(checkpoint_name="best.pth"):
 
 
 if __name__ == "__main__":
-    run_test_evaluation()
+    run_test_evaluation(device=DEVICE)
