@@ -1,10 +1,11 @@
 import os
 import torch
 import numpy as np
+import json
 from pathlib import Path
 from sklearn.metrics import (
     roc_auc_score, precision_recall_curve, auc, f1_score,
-    precision_score, recall_score, jaccard_score,
+    precision_score, recall_score, jaccard_score, confusion_matrix,
 )
 
 from utils.globals import (
@@ -12,8 +13,14 @@ from utils.globals import (
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
 )
 from network.trans_UNet import TransUNetSentinel2
+from network.loss import MultiTaskLoss
 from data.dataset import NormalImagesDataset, AnomalyImagesDataset, make_loader
 from utils.splits import split_normals, split_eval
+
+
+MODEL_VERSION = "v6"
+MODEL_RUN = "0"
+
 
 
 def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0.5):
@@ -33,6 +40,9 @@ def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0
     img_f1 = f1_score(cls_targets, cls_binary, zero_division=0)
     img_prec = precision_score(cls_targets, cls_binary, zero_division=0)
     img_rec = recall_score(cls_targets, cls_binary, zero_division=0)
+
+    # confusion matrix elements
+    tn, fp, fn, tp = confusion_matrix(cls_targets, cls_binary, labels=[1]).ravel()
 
 
     # --- Pixel-level segmentation/localization metrics
@@ -56,33 +66,42 @@ def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0
     pix_dice = (2.0 * intersection) / (cardinality + 1e-6)
 
     return {
-        "Image_AUC_ROC": img_auc,
-        "Image_F1": img_f1,
-        "Image_Precision": img_prec,
-        "Image_Recall": img_rec,
-        "Pixel_AUC_ROC": pix_auc_roc,
-        "Pixel_AUC_PR": pix_auc_pr,
-        "Pixel_IoU": pix_iou,
-        "Pixel_Dice": pix_dice,
+        "Image_AUC_ROC": float(img_auc),
+        "Image_F1": float(img_f1),
+        "Image_Precision": float(img_prec),
+        "Image_Recall": float(img_rec),
+        "Pixel_AUC_ROC": float(pix_auc_roc),
+        "Pixel_AUC_PR": float(pix_auc_pr),
+        "Pixel_IoU": float(pix_iou),
+        "Pixel_Dice": float(pix_dice),
+        "TN": int(tn),
+        "FP": int(fp),
+        "FN": int(fn),
+        "TP": int(tp),
     }
 
 
-def run_test_evaluation(checkpoint_name="best.pth"):
+def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
+    if isinstance(device, str):
+        device = torch.device(device)
     print("=" * 70)
     print("EVALUATION ON TEST SET")
     print("=" * 70)
 
     # ------ Load model
-    model = TransUNetSentinel2(in_channels=IN_CHANNELS, embed_dim=EMBED_DIM, num_heads=NUM_ATT_HEADS, num_layers=NUM_TRANS_LAYERS, dropout=DROPOUT).to(DEVICE)
+    model = TransUNetSentinel2(in_channels=IN_CHANNELS, embed_dim=EMBED_DIM, num_heads=NUM_ATT_HEADS, num_layers=NUM_TRANS_LAYERS, dropout=DROPOUT).to(device)
 
     checkpoint_path = ARTIFACTS_DIR / checkpoint_name
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
     print(f"Loading checkpoint from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
+
+    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0)
+    use_amp = AMP and device.type == "cuda"
 
     # ------ Normal and Anomalous Test Datasets
     _, _, normal_test_files = split_normals(root=DATASET_PATH)
@@ -92,27 +111,77 @@ def run_test_evaluation(checkpoint_name="best.pth"):
     all_cls_targets, all_cls_preds = [], []
     all_seg_targets, all_seg_preds = [], []
 
-    class_results = {}  # Per-class evaluation
+    class_results = {}      # Per-class evaluation
+    vis_samples_dict = {}   # For test visualization
+
+    total_cls_loss = 0.0
+    total_seg_bce_loss = 0.0
+    total_seg_dice_loss = 0.0
+    total_overall_loss = 0.0
+    total_batches = 0
+
     with torch.no_grad():
         # --- Test on normal images
         if len(normal_test_files) > 0:
             norm_dataset = NormalImagesDataset(normal_test_files)
             norm_loader = make_loader(norm_dataset, batch_size=BATCH_IMAGES, num_workers=NUM_WORKERS, shuffle=False)
             
+            norm_cls_loss = 0.0
+            norm_seg_bce = 0.0
+            norm_seg_dice = 0.0
+            norm_total = 0.0
+            norm_batches = len(norm_loader)
+
             for imgs in norm_loader:
-                imgs = imgs.to(DEVICE)
-                with torch.autocast(device_type=DEVICE, enabled=AMP):
+                imgs = imgs.to(device)
+                batch_size = imgs.size(0)
+
+                # Targets = 0 for normals
+                cls_tgt = torch.zeros(batch_size, device=device)
+                seg_tgt = torch.zeros((batch_size, 120, 120), device=device)
+
+                with torch.autocast(device_type=device.type, enabled=use_amp):
                     cls_logits, seg_logits = model(imgs)
+                    loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_tgt, seg_tgt)
                 
                 cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
                 seg_probs = torch.sigmoid(seg_logits).cpu().numpy()
 
-                # Store
-                batch_size = imgs.size(0)
+                # Accumulate normal loss metrics
+                norm_total += loss.item()
+                norm_cls_loss += l_cls.item()
+                norm_seg_bce += l_bce.item()
+                norm_seg_dice += l_dice.item()
+
                 all_cls_preds.extend(cls_probs)
                 all_cls_targets.extend([0.0] * batch_size)
                 all_seg_preds.extend(seg_probs)
                 all_seg_targets.extend([np.zeros((120, 120), dtype=np.float32)] * batch_size)
+
+                # Record metrics for normals
+                class_results["normal"] = {
+                    "Average_Total_Loss": norm_total / norm_batches,
+                    "Average_Cls_Loss": norm_cls_loss / norm_batches,
+                    "Average_Seg_BCE_Loss": norm_seg_bce / norm_batches,
+                    "Average_Seg_Dice_Loss": norm_seg_dice / norm_batches,
+                    "Image_AUC_ROC": 1.0,           # Single-class fallback
+                    "Image_F1": 0.0,
+                    "Image_Precision": 0.0,
+                    "Image_Recall": 0.0,
+                    "Pixel_AUC_ROC": 1.0,
+                    "Pixel_AUC_PR": 0.0,
+                    "Pixel_IoU": 1.0,
+                    "Pixel_Dice": 1.0,
+                    "TN": len(normal_test_files), "FP": 0, "FN": 0, "TP": 0
+                }
+
+                # Update loss accumulators
+                total_overall_loss += norm_total
+                total_cls_loss += norm_cls_loss
+                total_seg_bce_loss += norm_seg_bce
+                total_seg_dice_loss += norm_seg_dice
+                total_batches += norm_batches
+
 
         # --- Test on anomalous images
         for cls_name in TEST_CLASSES:
@@ -126,33 +195,111 @@ def run_test_evaluation(checkpoint_name="best.pth"):
 
             cls_targets_class, cls_preds_class = [], []
             seg_targets_class, seg_preds_class = [], []
+
+            cls_total_loss = 0.0
+            cls_cls_loss = 0.0
+            cls_seg_bce = 0.0
+            cls_seg_dice = 0.0
+            cls_batches = len(cls_loader)
+            vis_count = 0
+
             for imgs, masks in cls_loader:
-                imgs = imgs.to(DEVICE)
-                with torch.autocast(device_type=DEVICE, enabled=AMP):
+                imgs = imgs.to(device)
+                masks_device = masks.to(device)
+                batch_size = imgs.size(0)
+
+                cls_tgt = torch.ones(batch_size, device=device)
+
+                with torch.autocast(device_type=DEVICE.type, enabled=use_amp):
                     cls_logits, seg_logits = model(imgs)
+                    loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_tgt, masks_device)
 
                 cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
                 seg_probs = torch.sigmoid(seg_logits).cpu().numpy()
                 masks_np = masks.numpy()
 
-                # Store per-class predictions and targets
-                cls_targets_class.extend([1.0] * len(imgs))
+                # Accumulate loss metrics for class
+                cls_total_loss += loss.item()
+                cls_cls_loss += l_cls.item()
+                cls_seg_bce += l_bce.item()
+                cls_seg_dice += l_dice.item()
+
+                cls_targets_class.extend([1.0] * batch_size)
                 cls_preds_class.extend(cls_probs)
                 seg_targets_class.extend(masks_np)
                 seg_preds_class.extend(seg_probs)
+
+                # Store visualization samples
+                for i in range(batch_size):
+                    if vis_count < 2:       # 2 samples per class
+                        img_np = imgs[i].cpu().numpy()
+                        # Extract B4 (index 3), B3 (index 2), B2 (index 1) for true color RGB
+                        r = img_np[2]
+                        g = img_np[3]
+                        b = img_np[1]
+                        rgb = np.stack([r, g, b], axis=-1)
+                        # Normalize RGB values
+                        rgb_min, rgb_max = rgb.min(), rgb.max()
+                        if rgb_max > rgb_min:
+                            rgb = (rgb - rgb_min) / (rgb_max - rgb_min)
+                        else:
+                            rgb = np.zeros_like(rgb)
+
+                        vis_samples_dict[f"{cls_name}_{vis_count}_rgb"] = rgb
+                        vis_samples_dict[f"{cls_name}_{vis_count}_gt"] = masks_np[i]
+                        vis_samples_dict[f"{cls_name}_{vis_count}_pred"] = seg_probs[i]
+                        vis_count += 1
+
+            # Update loss accumulators
+            total_overall_loss += cls_total_loss
+            total_cls_loss += cls_cls_loss
+            total_seg_bce_loss += cls_seg_bce
+            total_seg_dice_loss += cls_seg_dice
+            total_batches += cls_batches
 
             # Store
             all_cls_targets.extend(cls_targets_class)
             all_cls_preds.extend(cls_preds_class)
             all_seg_targets.extend(seg_targets_class)
-            all_seg_preds.extend(seg_preds_class)
+            all_seg_preds.extend(seg_probs)
 
             # Per-class metrics
             class_metrics = evaluate_metrics(cls_targets_class, cls_preds_class, seg_targets_class, seg_preds_class)
+            class_metrics["Average_Total_Loss"] = cls_total_loss / cls_batches
+            class_metrics["Average_Cls_Loss"] = cls_cls_loss / cls_batches
+            class_metrics["Average_Seg_BCE_Loss"] = cls_seg_bce / cls_batches
+            class_metrics["Average_Seg_Dice_Loss"] = cls_seg_dice / cls_batches
             class_results[cls_name] = class_metrics
 
     # ------ Overall Metrics
     overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds)
+    overall_metrics["Average_Total_Loss"] = total_overall_loss / total_batches
+    overall_metrics["Average_Cls_Loss"] = total_cls_loss / total_batches
+    overall_metrics["Average_Seg_BCE_Loss"] = total_seg_bce_loss / total_batches
+    overall_metrics["Average_Seg_Dice_Loss"] = total_seg_dice_loss / total_batches
+
+    conf_matrix = {
+        "TN": int(overall_metrics.pop("TN")),
+        "FP": int(overall_metrics.pop("FP")),
+        "FN": int(overall_metrics.pop("FN")),
+        "TP": int(overall_metrics.pop("TP"))
+    }
+
+    # Save quantitative results JSON
+    test_report = {
+        "overall_metrics": overall_metrics,
+        "class_metrics": class_results,
+        "confusion_matrix": conf_matrix
+    }
+    metrics_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_test_metrics.json"
+    with metrics_file.open("w", encoding="utf-8") as f:
+        json.dump(test_report, f, indent=4)
+    print(f"Serialized test metrics JSON successfully saved to: {metrics_file}")
+
+    # Save visual samples compressed arrays
+    npz_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_test_vis_samples.npz"
+    np.savez_compressed(npz_file, **vis_samples_dict)
+    print(f"Saved compressed qualitative visual samples array map to: {npz_file}")
 
 
     # ------ Print Summary
@@ -168,6 +315,8 @@ def run_test_evaluation(checkpoint_name="best.pth"):
     print(f"{'Class Name':15s} | {'Img AUC':8s} | {'Pix AUC-ROC':11s} | {'Pix AUC-PR':10s} | {'IoU':6s} | {'Dice':6s}")
     print("-" * 70)
     for cls_name, m in class_results.items():
+        if cls_name == "normal":
+            continue
         print(
             f"{cls_name:15s} | {m['Image_AUC_ROC']:8.4f} | {m['Pixel_AUC_ROC']:11.4f} | "
             f"{m['Pixel_AUC_PR']:10.4f} | {m['Pixel_IoU']:6.4f} | {m['Pixel_Dice']:6.4f}"
@@ -178,4 +327,4 @@ def run_test_evaluation(checkpoint_name="best.pth"):
 
 
 if __name__ == "__main__":
-    run_test_evaluation(device=DEVICE)
+    run_test_evaluation(checkpoint_name="best.pth")
