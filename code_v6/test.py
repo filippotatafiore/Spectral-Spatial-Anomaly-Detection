@@ -11,6 +11,7 @@ from sklearn.metrics import (
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
+    MODEL_VERSION, MODEL_RUN,
 )
 from network.trans_UNet import TransUNetSentinel2
 from network.loss import MultiTaskLoss
@@ -18,8 +19,8 @@ from data.dataset import NormalImagesDataset, AnomalyImagesDataset, make_loader
 from utils.splits import split_normals, split_eval
 
 
-MODEL_VERSION = "v6"
-MODEL_RUN = "0"
+# list of intermediate epochs to evaluate
+EVAL_EPOCHS = [15, 30, 40, 45]
 
 
 
@@ -99,6 +100,12 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
+
+    ckpt_epoch = checkpoint.get("epoch", "N/A")
+    if checkpoint_name == "best.pth":
+        print(f"  'best.pth' at Epoch {ckpt_epoch}")
+    else:
+        print(f"Loaded {checkpoint_name} (Epoch {ckpt_epoch})")
 
     criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0)
     use_amp = AMP and device.type == "cuda"
@@ -210,7 +217,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
 
                 cls_tgt = torch.ones(batch_size, device=device)
 
-                with torch.autocast(device_type=DEVICE.type, enabled=use_amp):
+                with torch.autocast(device_type=device.type, enabled=use_amp):
                     cls_logits, seg_logits = model(imgs)
                     loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_tgt, masks_device)
 
@@ -233,10 +240,10 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 for i in range(batch_size):
                     if vis_count < 2:       # 2 samples per class
                         img_np = imgs[i].cpu().numpy()
-                        # Extract B4 (index 3), B3 (index 2), B2 (index 1) for true color RGB
-                        r = img_np[2]
-                        g = img_np[3]
-                        b = img_np[1]
+                        # Extract true color RGB
+                        r = img_np[3]   # B4: red
+                        g = img_np[2]   # B3: green
+                        b = img_np[1]   # B2: blue
                         rgb = np.stack([r, g, b], axis=-1)
                         # Normalize RGB values
                         rgb_min, rgb_max = rgb.min(), rgb.max()
@@ -327,4 +334,49 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
 
 
 if __name__ == "__main__":
-    run_test_evaluation(checkpoint_name="best.pth")
+    checkpoints_to_run = []
+    for ep in EVAL_EPOCHS:
+        ckpt_name = f"epoch_{ep}.pth"
+        if (ARTIFACTS_DIR / ckpt_name).exists():
+            checkpoints_to_run.append(ckpt_name)
+        else:
+            print(f"Notice: '{ckpt_name}' was not found in {ARTIFACTS_DIR} and will be skipped.")
+    # Add last.pth
+    if (ARTIFACTS_DIR / "last.pth").exists() and "last.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("last.pth")
+    # Add best.pth
+    if (ARTIFACTS_DIR / "best.pth").exists() and "best.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("best.pth")
+
+
+    if not checkpoints_to_run:
+        print(f"No valid target checkpoints found in {ARTIFACTS_DIR}")
+    else:
+        print(f"\nSelected {len(checkpoints_to_run)} checkpoint(s) for evaluation: {checkpoints_to_run}")
+
+        multi_summary = {}
+        for ckpt_name in checkpoints_to_run:
+            print("\n" + "=" * 70)
+            print(f" EVALUATING CHECKPOINT: {ckpt_name}")
+            print("=" * 70)
+
+            try:
+                overall_m, class_m = run_test_evaluation(checkpoint_name=ckpt_name, device=DEVICE)
+                multi_summary[ckpt_name] = overall_m
+
+            except Exception as e:
+                print(f"Error evaluating {ckpt_name}: {e}")
+
+
+        # Print summary
+        print("\n" + "=" * 80)
+        print(" EVALUATED CHECKPOINTS PERFORMANCE COMPARISON")
+        print("=" * 80)
+        print(f"{'Checkpoint':20s} | {'Img AUC':8s} | {'Pix AUC-ROC':11s} | {'Pix IoU':8s} | {'Pix Dice':8s}")
+        print("-" * 80)
+        for ckpt_name, m in multi_summary.items():
+            print(
+                f"{ckpt_name:20s} | {m.get('Image_AUC_ROC', 0.0):8.4f} | "
+                f"{m.get('Pixel_AUC_ROC', 0.0):11.4f} | {m.get('Pixel_IoU', 0.0):8.4f} | {m.get('Pixel_Dice', 0.0):8.4f}"
+            )
+            print("=" * 80)

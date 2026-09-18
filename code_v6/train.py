@@ -7,6 +7,7 @@ from utils.globals import (
     DEVICE, ARTIFACTS_DIR, EPOCHS, LR, WEIGHT_DECAY,
     SOURCE_BALANCE_POWER, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
+    MODEL_VERSION, MODEL_RUN,
 )
 from network.trans_UNet import TransUNetSentinel2
 from data.dataset import make_loader, make_source_weights, NormalImagesDataset
@@ -171,7 +172,8 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         history["lr"].append(current_lr)
 
         # Save incrementally to json
-        metrics_file = ARTIFACTS_DIR / "training_metrics.json"
+        metrics_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/training_metrics.json"
+        metrics_file.parent.mkdir(parents=True, exist_ok=True)
         with metrics_file.open("w", encoding="utf-8") as f:
             json.dump(history, f, indent=4)
 

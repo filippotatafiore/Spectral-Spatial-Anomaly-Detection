@@ -66,6 +66,9 @@ SOURCE_BALANCE_POWER = float(config.get("SOURCE_BALANCE_POWER", 0.0))
 
 SEED = config["SEED"]
 
+MODEL_VERSION = config.get("MODEL_VERSION", "v6")
+MODEL_RUN = config.get("MODEL_RUN", "0")
+
 
 
 # ======================================================= VALIDATION
