@@ -20,7 +20,7 @@ from utils.splits import split_normals, split_eval
 
 
 # list of intermediate epochs to evaluate
-EVAL_EPOCHS = [15, 30, 40, 45]
+EVAL_EPOCHS = [10, 30, 40]
 
 
 
@@ -43,7 +43,7 @@ def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0
     img_rec = recall_score(cls_targets, cls_binary, zero_division=0)
 
     # confusion matrix elements
-    tn, fp, fn, tp = confusion_matrix(cls_targets, cls_binary, labels=[1]).ravel()
+    tn, fp, fn, tp = confusion_matrix(cls_targets, cls_binary, labels=[0, 1]).ravel()
 
 
     # --- Pixel-level segmentation/localization metrics
@@ -139,7 +139,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             norm_total = 0.0
             norm_batches = len(norm_loader)
 
-            for imgs in norm_loader:
+            for imgs, _, _ in norm_loader:
                 imgs = imgs.to(device)
                 batch_size = imgs.size(0)
 
@@ -165,29 +165,29 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 all_seg_preds.extend(seg_probs)
                 all_seg_targets.extend([np.zeros((120, 120), dtype=np.float32)] * batch_size)
 
-                # Record metrics for normals
-                class_results["normal"] = {
-                    "Average_Total_Loss": norm_total / norm_batches,
-                    "Average_Cls_Loss": norm_cls_loss / norm_batches,
-                    "Average_Seg_BCE_Loss": norm_seg_bce / norm_batches,
-                    "Average_Seg_Dice_Loss": norm_seg_dice / norm_batches,
-                    "Image_AUC_ROC": 1.0,           # Single-class fallback
-                    "Image_F1": 0.0,
-                    "Image_Precision": 0.0,
-                    "Image_Recall": 0.0,
-                    "Pixel_AUC_ROC": 1.0,
-                    "Pixel_AUC_PR": 0.0,
-                    "Pixel_IoU": 1.0,
-                    "Pixel_Dice": 1.0,
-                    "TN": len(normal_test_files), "FP": 0, "FN": 0, "TP": 0
-                }
+            # Record metrics for normals
+            class_results["normal"] = {
+                "Average_Total_Loss": norm_total / norm_batches,
+                "Average_Cls_Loss": norm_cls_loss / norm_batches,
+                "Average_Seg_BCE_Loss": norm_seg_bce / norm_batches,
+                "Average_Seg_Dice_Loss": norm_seg_dice / norm_batches,
+                "Image_AUC_ROC": 1.0,           # Single-class fallback
+                "Image_F1": 0.0,
+                "Image_Precision": 0.0,
+                "Image_Recall": 0.0,
+                "Pixel_AUC_ROC": 1.0,
+                "Pixel_AUC_PR": 0.0,
+                "Pixel_IoU": 1.0,
+                "Pixel_Dice": 1.0,
+                "TN": len(normal_test_files), "FP": 0, "FN": 0, "TP": 0
+            }
 
-                # Update loss accumulators
-                total_overall_loss += norm_total
-                total_cls_loss += norm_cls_loss
-                total_seg_bce_loss += norm_seg_bce
-                total_seg_dice_loss += norm_seg_dice
-                total_batches += norm_batches
+            # Update loss accumulators
+            total_overall_loss += norm_total
+            total_cls_loss += norm_cls_loss
+            total_seg_bce_loss += norm_seg_bce
+            total_seg_dice_loss += norm_seg_dice
+            total_batches += norm_batches
 
 
         # --- Test on anomalous images
@@ -210,7 +210,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             cls_batches = len(cls_loader)
             vis_count = 0
 
-            for imgs, masks in cls_loader:
+            for imgs, _, masks, _, _ in cls_loader:
                 imgs = imgs.to(device)
                 masks_device = masks.to(device)
                 batch_size = imgs.size(0)
@@ -268,7 +268,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             all_cls_targets.extend(cls_targets_class)
             all_cls_preds.extend(cls_preds_class)
             all_seg_targets.extend(seg_targets_class)
-            all_seg_preds.extend(seg_probs)
+            all_seg_preds.extend(seg_preds_class)
 
             # Per-class metrics
             class_metrics = evaluate_metrics(cls_targets_class, cls_preds_class, seg_targets_class, seg_preds_class)
@@ -292,19 +292,20 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
         "TP": int(overall_metrics.pop("TP"))
     }
 
+    ckpt_id = checkpoint_name.removesuffix(".pth")
     # Save quantitative results JSON
     test_report = {
         "overall_metrics": overall_metrics,
         "class_metrics": class_results,
         "confusion_matrix": conf_matrix
     }
-    metrics_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_test_metrics.json"
+    metrics_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_metrics.json"
     with metrics_file.open("w", encoding="utf-8") as f:
         json.dump(test_report, f, indent=4)
     print(f"Serialized test metrics JSON successfully saved to: {metrics_file}")
 
     # Save visual samples compressed arrays
-    npz_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_test_vis_samples.npz"
+    npz_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_vis_samples.npz"
     np.savez_compressed(npz_file, **vis_samples_dict)
     print(f"Saved compressed qualitative visual samples array map to: {npz_file}")
 

@@ -4,7 +4,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from collections import Counter
 
-from utils.globals import DATASET_PATH, N_BANDS, CLIP_REFLECTANCE
+from utils.globals import DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE
 
 
 def _load_image(path, clip=CLIP_REFLECTANCE):
@@ -13,8 +13,8 @@ def _load_image(path, clip=CLIP_REFLECTANCE):
     """
 
     arr = np.load(path).astype(np.float32)
-    if arr.shape[0] != N_BANDS:
-        raise ValueError(f"{path}: expected {N_BANDS} bands, got shape {arr.shape}")
+    if arr.shape[0] != IN_CHANNELS:
+        raise ValueError(f"{path}: expected {IN_CHANNELS} bands, got shape {arr.shape}")
 
     # Clip values to [0, clip]
     if clip is not None:

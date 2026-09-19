@@ -156,7 +156,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         except ValueError:  # Fallback if only one class is present in validation batch
             val_auc = 0.5
 
-        current_lr = optimizer.param_groups['lr']
+        current_lr = optimizer.param_groups[0]['lr']
 
         # Log to history
         history["epoch"].append(epoch)
