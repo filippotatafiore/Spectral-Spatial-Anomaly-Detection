@@ -221,8 +221,8 @@ def main():
         print(f"Balanced sampling active (power={SOURCE_BALANCE_POWER})")
 
     train_dataset = ConcatDataset([
-        NormalImagesDataset(train_normal_files, CLIP_REFLECTANCE),
-        AnomalyImagesDataset(train_anomaly_triples, CLIP_REFLECTANCE),
+        NormalImagesDataset(train_normal_files, CLIP_REFLECTANCE, augment=True),
+        AnomalyImagesDataset(train_anomaly_triples, CLIP_REFLECTANCE, augment=True),
     ])
     val_dataset = ConcatDataset([
         NormalImagesDataset(val_normal_files, CLIP_REFLECTANCE),

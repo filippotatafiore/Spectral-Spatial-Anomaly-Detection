@@ -214,12 +214,12 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             cls_batches = len(cls_loader)
             vis_count = 0
 
-            for imgs, _, masks, _, _ in cls_loader:
+            for imgs, cls_labels, masks, _, _ in cls_loader:
                 imgs = imgs.to(device)
                 masks_device = masks.to(device)
                 batch_size = imgs.size(0)
 
-                cls_tgt = torch.ones(batch_size, device=device)
+                cls_tgt = cls_labels.to(device)
 
                 with torch.autocast(device_type=device.type, enabled=use_amp):
                     cls_logits, seg_logits = model(imgs)
@@ -235,7 +235,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 cls_seg_bce += l_bce.item()
                 cls_seg_dice += l_dice.item()
 
-                cls_targets_class.extend([1.0] * batch_size)
+                cls_targets_class.extend(cls_labels.tolist())
                 cls_preds_class.extend(cls_probs)
                 seg_targets_class.extend(masks_np)
                 seg_preds_class.extend(seg_probs)
