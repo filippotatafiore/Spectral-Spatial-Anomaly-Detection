@@ -23,22 +23,6 @@ def _load_image(path, clip=CLIP_REFLECTANCE):
     return torch.from_numpy(arr)  # (12, 120, 120) = (C, H, W)
 
 
-def _load_mask(path):
-    """
-        Load (120, 120) float32 anomaly mask from .npy file.
-        If the mask file does not exist, return a zero mask.
-    """
-
-    mask_path = path.parent / f"{path.stem}_mask.npy"
-    if mask_path.exists():
-        mask = np.load(mask_path)
-        mask = np.nan_to_num(mask, nan=0.0)
-        return torch.from_numpy(mask).float()
-    else:
-        # Normal image without anomaly mask
-        return torch.zeros((120, 120), dtype=torch.float32)
-
-
 class NormalImagesDataset(Dataset):
     """
         Unlabelled normal images, for unsupervised training.
@@ -63,12 +47,13 @@ class NormalImagesDataset(Dataset):
 
 class AnomalyImagesDataset(Dataset):
     """
-        Anomalous images with ground-truth pixel-level binary masks, for testing.
+        Anomalous images with ground-truth pixel-level binary masks.
     """
 
-    def __init__(self, triples, clip=CLIP_REFLECTANCE):
+    def __init__(self, triples, clip=CLIP_REFLECTANCE, return_meta=False):
         self.triples = list(triples)
         self.clip = clip
+        self.return_meta = return_meta  # True for testing, False for training
 
     def __len__(self):
         return len(self.triples)
@@ -79,7 +64,11 @@ class AnomalyImagesDataset(Dataset):
         mask = torch.from_numpy(np.load(mask_path).astype(np.uint8)).float()  # (120, 120)
         cls_label = 1.0 if torch.max(mask) > 0.5 else 0.0  # 1 if anomalous pixels exist, else 0
         cls_tensor = torch.tensor(cls_label, dtype=torch.float32)
-        return image, cls_tensor, mask, class_name, img_path.stem
+
+        if self.return_meta:    # for testing
+            return image, cls_tensor, mask, class_name, img_path.stem
+
+        return image, cls_tensor, mask  # for training
 
 
 def make_source_weights(files, power):
@@ -90,7 +79,12 @@ def make_source_weights(files, power):
     if power <= 0:
         return None
 
-    sources = [p.parent.name for p in files]
+    def _source_name(item):
+        if isinstance(item, tuple):        # (img_path, mask_path, class_name) anomaly triple
+            return f"{item[2]}_anomaly"
+        return item.parent.name            # plain Path -> normal image
+
+    sources = [_source_name(f) for f in files]
     counts = Counter(sources)
     return torch.tensor([1.0 / (counts[s] ** power) for s in sources], dtype=torch.double)
 

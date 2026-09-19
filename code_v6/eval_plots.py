@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 MODEL_VERSION = "v6"
 MODEL_RUN = "0"
+MODEL_ID = "best"       # "best" | "last" | "epoch_XX"
 
 
 
@@ -199,8 +200,8 @@ def plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir):
 if __name__ == "__main__":
     try:
         from utils.globals import ARTIFACTS_DIR
-        metrics_json_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_test_metrics.json"
-        vis_samples_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_test_vis_samples.npz"
+        metrics_json_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_metrics.json"
+        vis_samples_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_vis_samples.npz"
         output_dir = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_evaluation"
     except ImportError:
         metrics_json_path = Path("artifacts/test_metrics.json")

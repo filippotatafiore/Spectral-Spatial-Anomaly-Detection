@@ -16,7 +16,7 @@ from utils.globals import (
 from network.trans_UNet import TransUNetSentinel2
 from network.loss import MultiTaskLoss
 from data.dataset import NormalImagesDataset, AnomalyImagesDataset, make_loader
-from utils.splits import split_normals, split_eval
+from utils.splits import split_normals, split_anomal
 
 
 # list of intermediate epochs to evaluate
@@ -112,7 +112,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
 
     # ------ Normal and Anomalous Test Datasets
     _, _, normal_test_files = split_normals(root=DATASET_PATH)
-    eval_test_files_dict = split_eval(root=DATASET_PATH, classes=TEST_CLASSES)
+    eval_test_files_dict = split_anomal(root=DATASET_PATH, classes=TEST_CLASSES)
 
     # ------ Evaluation
     all_cls_targets, all_cls_preds = [], []
@@ -189,6 +189,10 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             total_seg_dice_loss += norm_seg_dice
             total_batches += norm_batches
 
+        # Snapshot normal-only predictions
+        norm_cls_targets_snapshot = list(all_cls_targets)
+        norm_cls_preds_snapshot = list(all_cls_preds)
+
 
         # --- Test on anomalous images
         for cls_name in TEST_CLASSES:
@@ -197,7 +201,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             if len(test_triples) == 0:
                 continue
 
-            cls_dataset = AnomalyImagesDataset(test_triples)
+            cls_dataset = AnomalyImagesDataset(test_triples, return_meta=True)
             cls_loader = make_loader(cls_dataset, batch_size=BATCH_IMAGES, num_workers=NUM_WORKERS, shuffle=False)
 
             cls_targets_class, cls_preds_class = [], []
@@ -271,7 +275,11 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             all_seg_preds.extend(seg_preds_class)
 
             # Per-class metrics
-            class_metrics = evaluate_metrics(cls_targets_class, cls_preds_class, seg_targets_class, seg_preds_class)
+            class_metrics = evaluate_metrics(
+                cls_targets_class + norm_cls_targets_snapshot,
+                cls_preds_class + norm_cls_preds_snapshot,
+                seg_targets_class, seg_preds_class,
+            )
             class_metrics["Average_Total_Loss"] = cls_total_loss / cls_batches
             class_metrics["Average_Cls_Loss"] = cls_cls_loss / cls_batches
             class_metrics["Average_Seg_BCE_Loss"] = cls_seg_bce / cls_batches

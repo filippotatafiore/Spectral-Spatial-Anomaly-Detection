@@ -1,17 +1,18 @@
 import torch
+from torch.utils.data import ConcatDataset
 from sklearn.metrics import roc_auc_score
 import json
 
 from network.loss import MultiTaskLoss
 from utils.globals import (
-    DEVICE, ARTIFACTS_DIR, EPOCHS, LR, WEIGHT_DECAY,
+    TEST_CLASSES, DEVICE, ARTIFACTS_DIR, EPOCHS, LR, WEIGHT_DECAY,
     SOURCE_BALANCE_POWER, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
     MODEL_VERSION, MODEL_RUN,
 )
 from network.trans_UNet import TransUNetSentinel2
-from data.dataset import make_loader, make_source_weights, NormalImagesDataset
-from utils.splits import split_normals
+from data.dataset import make_loader, make_source_weights, NormalImagesDataset, AnomalyImagesDataset
+from utils.splits import split_normals, split_anomal
 
 
 def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, device='cuda'):
@@ -200,26 +201,35 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
 
 
 def main():
+    # Build model
     model = TransUNetSentinel2(in_channels=IN_CHANNELS, embed_dim=EMBED_DIM, num_heads=NUM_ATT_HEADS, num_layers=NUM_TRANS_LAYERS, dropout=DROPOUT)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {n_params:,}")
 
     # Split training images (determinitically)
-    train_files, val_files, _ = split_normals()
-    print(f"Train images: {len(train_files)} | val images: {len(val_files)}")
+    train_normal_files, val_normal_files, _ = split_normals()
+    anomaly_splits = split_anomal()  # {class: {"train": [...], "val": [...], "test": [...]}}
+    train_anomaly_triples = [t for cls in TEST_CLASSES for t in anomaly_splits[cls]["train"]]
+    val_anomaly_triples   = [t for cls in TEST_CLASSES for t in anomaly_splits[cls]["val"]]
+
+    print(f"Train images: {len(train_normal_files)} normal + {len(train_anomaly_triples)} anomalous")
+    print(f"Val images:   {len(val_normal_files)} normal + {len(val_anomaly_triples)} anomalous")
 
     # Create data loaders for training and validation
-    train_weights = make_source_weights(train_files, SOURCE_BALANCE_POWER)
+    train_weights = make_source_weights(train_normal_files + train_anomaly_triples, SOURCE_BALANCE_POWER)
     if train_weights is not None:
         print(f"Balanced sampling active (power={SOURCE_BALANCE_POWER})")
-    train_loader = make_loader(
-        NormalImagesDataset(train_files, CLIP_REFLECTANCE),  # train set
-        BATCH_IMAGES, NUM_WORKERS, shuffle=True, seed=SEED, weights=train_weights,
-    )
-    val_loader = make_loader(
-        NormalImagesDataset(val_files, CLIP_REFLECTANCE),  # val set
-        BATCH_IMAGES, NUM_WORKERS
-    )
+
+    train_dataset = ConcatDataset([
+        NormalImagesDataset(train_normal_files, CLIP_REFLECTANCE),
+        AnomalyImagesDataset(train_anomaly_triples, CLIP_REFLECTANCE),
+    ])
+    val_dataset = ConcatDataset([
+        NormalImagesDataset(val_normal_files, CLIP_REFLECTANCE),
+        AnomalyImagesDataset(val_anomaly_triples, CLIP_REFLECTANCE),
+    ])
+    train_loader = make_loader(train_dataset, BATCH_IMAGES, NUM_WORKERS, shuffle=True, seed=SEED, weights=train_weights)
+    val_loader = make_loader(val_dataset, BATCH_IMAGES, NUM_WORKERS)
 
     # Train the model
     train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LR, weight_decay=WEIGHT_DECAY, device=DEVICE)

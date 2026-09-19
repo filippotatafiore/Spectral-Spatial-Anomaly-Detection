@@ -4,12 +4,13 @@ artifacts_dir: "artifacts"
 
 
 # --------------------------- data
-TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "floods", "landslides", "mines"]
-TEST_CLASSES:  ["burn_scars", "floods", "landslides", "mines"]
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "landslides", "mines"] # ["ben-ge-8k", "burn_scars", "floods", "landslides", "mines"]
+TEST_CLASSES: ["burn_scars", "landslides", "mines"] # ["burn_scars", "floods", "landslides", "mines"]
 
 NORMAL_VAL_FRACTION: 0.10   # fraction of normals held out for validation
-NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for TESTING
-EVAL_VAL_FRACTION: 0.20     # fraction of test images
+NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for testing
+ANOMAL_VAL_FRACTION: 0.20   # fraction of anomalies held out for validation
+ANOMAL_TEST_FRACTION: 0.20   # fraction of anomalies held out for validation
 
 SPLIT_SALT: "ssad_1"
 GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val

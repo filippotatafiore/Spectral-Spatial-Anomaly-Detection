@@ -2,8 +2,9 @@ import hashlib
 from pathlib import Path
 import re
 
-from utils.globals import (DATASET_PATH, TRAIN_SOURCES, TEST_CLASSES, NORMAL_VAL_FRACTION,
-                           NORMAL_TEST_FRACTION, EVAL_VAL_FRACTION, SPLIT_SALT, GROUPED_SPLIT)
+from utils.globals import (DATASET_PATH, TRAIN_SOURCES, TEST_CLASSES,
+                           NORMAL_VAL_FRACTION, NORMAL_TEST_FRACTION, ANOMAL_VAL_FRACTION, ANOMAL_TEST_FRACTION,
+                           SPLIT_SALT, GROUPED_SPLIT)
 
 
 
@@ -59,17 +60,19 @@ def split_normals(root=DATASET_PATH, sources=None, val_fraction=None, test_fract
     return train_files, val_files, test_files  # file paths
 
 
-def split_eval(root=DATASET_PATH, classes=None, val_fraction=None, salt=SPLIT_SALT):
+def split_anomal(root=DATASET_PATH, classes=None, test_fraction=None, val_fraction=None, salt=SPLIT_SALT):
     """
-        Split test images into val (tuning) / test (reporting).
+        Split anomalous images
 
         out =
             {
                 "burn_scars": {
+                    "train": [ (img_path, mask_path, 'burn_scars'), (img_path, mask_path, 'burn_scars'), ... ],
                     "val": [ (img_path, mask_path, 'burn_scars'), (img_path, mask_path, 'burn_scars'), ... ],
                     "test": [ (img_path, mask_path, 'burn_scars'), (img_path, mask_path, 'burn_scars'), ... ]
                 },
                 "floods": {
+                    "train": [ (img_path, mask_path, 'floods'), (img_path, mask_path, 'floods'), ... ],
                     "val": [ (img_path, mask_path, 'floods'), (img_path, mask_path, 'floods'), ... ],
                     "test": [ (img_path, mask_path, 'floods'), (img_path, mask_path, 'floods'), ... ]
                 },
@@ -78,8 +81,11 @@ def split_eval(root=DATASET_PATH, classes=None, val_fraction=None, salt=SPLIT_SA
     """
 
     classes = classes or TEST_CLASSES
-    val_fraction = EVAL_VAL_FRACTION if val_fraction is None else val_fraction
-    threshold = int(round(val_fraction * 1000))
+
+    test_fraction = ANOMAL_TEST_FRACTION if test_fraction is None else test_fraction
+    val_fraction = ANOMAL_VAL_FRACTION if val_fraction is None else val_fraction
+    val_thr = int(round(val_fraction * 1000))
+    test_thr = val_thr + int(round(test_fraction * 1000))
 
     out = {}
     for cls in classes:
@@ -89,18 +95,23 @@ def split_eval(root=DATASET_PATH, classes=None, val_fraction=None, salt=SPLIT_SA
         if not img_dir.is_dir() or not mask_dir.is_dir():
             raise FileNotFoundError(f"Missing test class: {root / 'test' / cls}")
         
-        buckets = {"val": [], "test": []}
+        buckets = {"train": [], "val": [], "test": []}
         for img_path in sorted(img_dir.glob("*.npy")):
             mask_path = mask_dir / f"{img_path.stem}_mask.npy"
             if not mask_path.exists():
                 raise FileNotFoundError(f"No mask for {img_path}")
 
             bucket = stable_bucket(f"{cls}/{img_path.name}", salt)
-            key = "val" if bucket < threshold else "test"
+            if bucket < val_thr:
+                key = "val"
+            elif bucket < test_thr:
+                key = "test"
+            else:
+                key = "train"
+            
             buckets[key].append((img_path, mask_path, cls))
 
         out[cls] = buckets
-
     return out
 
 
@@ -136,8 +147,8 @@ def split_fingerprint():
         for name in sorted(f"{p.parent.name}/{p.name}" for p in files):
             h.update(f"{tag}:{name}\n".encode())
 
-    for cls, buckets in sorted(split_eval().items()):
-        for part in ("val", "test"):
+    for cls, buckets in sorted(split_anomal().items()):
+        for part in ("train", "val", "test"):
             for name in sorted(t[0].name for t in buckets[part]):
                 h.update(f"{cls}:{part}:{name}\n".encode())
 
@@ -148,7 +159,7 @@ if __name__ == "__main__":
     train_files, val_files, test_files = split_normals()
     print(f"normals      : {len(train_files)} train / {len(val_files)} val / {len(test_files)} test")
     
-    for cls, b in split_eval().items():
+    for cls, b in split_anomal().items():
         print(f"  {cls:<12} val={len(b['val']):5d} test={len(b['test']):5d}")
     print(f"SPLIT_SALT   : {SPLIT_SALT}")
     print(f"GROUPED_SPLIT: {GROUPED_SPLIT}")
