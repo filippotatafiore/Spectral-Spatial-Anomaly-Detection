@@ -140,6 +140,6 @@ def plot_training_metrics(metrics_path, output_dir):
     print("=" * 80 + "\n")
 
 if __name__ == "__main__":
-    metrics_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/training_metrics.json"
-    output_dir = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/training_plots"
+    metrics_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/training_metrics.json"
+    output_dir = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/training_plots"
     plot_training_metrics(metrics_path, output_dir)

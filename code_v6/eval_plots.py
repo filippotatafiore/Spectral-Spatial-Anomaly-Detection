@@ -5,6 +5,8 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+from utils.globals import ARTIFACTS_DIR
+
 
 MODEL_VERSION = "v6"
 MODEL_RUN = "0"
@@ -198,14 +200,8 @@ def plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir):
     print("=" * 80 + "\n")
 
 if __name__ == "__main__":
-    try:
-        from utils.globals import ARTIFACTS_DIR
-        metrics_json_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_metrics.json"
-        vis_samples_path = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_vis_samples.npz"
-        output_dir = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_evaluation"
-    except ImportError:
-        metrics_json_path = Path("artifacts/test_metrics.json")
-        vis_samples_path = Path("artifacts/test_vis_samples.npz")
-        output_dir = Path("artifacts/evaluation")
+    metrics_json_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_metrics.json"
+    vis_samples_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_vis_samples.npz"
+    output_dir = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_ID}_eval_plots"
 
     plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir)
