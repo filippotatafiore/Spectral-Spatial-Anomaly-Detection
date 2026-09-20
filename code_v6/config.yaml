@@ -28,7 +28,7 @@ DROPOUT: 0.1            # transformer dropout rate
 
 # --------------------------- train
 EPOCHS: 50
-BATCH_IMAGES: 8
+BATCH_IMAGES: 32
 
 LR: 1e-4
 WEIGHT_DECAY: 1e-4

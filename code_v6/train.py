@@ -153,7 +153,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         val_loss_seg_dice /= n_val_batches
 
         try:
-            val_auc = roc_auc_score(val_cls_targets, val_cls_preds)
+            val_auc = float(roc_auc_score(val_cls_targets, val_cls_preds))
         except ValueError:  # Fallback if only one class is present in validation batch
             val_auc = 0.5
 

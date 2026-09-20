@@ -22,6 +22,8 @@ from utils.splits import split_normals, split_anomal
 # list of intermediate epochs to evaluate
 EVAL_EPOCHS = [10, 30, 40]
 
+RESULTS_DIR = ARTIFACTS_DIR
+
 
 
 def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0.5):
@@ -92,12 +94,12 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     # ------ Load model
     model = TransUNetSentinel2(in_channels=IN_CHANNELS, embed_dim=EMBED_DIM, num_heads=NUM_ATT_HEADS, num_layers=NUM_TRANS_LAYERS, dropout=DROPOUT).to(device)
 
-    checkpoint_path = ARTIFACTS_DIR / checkpoint_name
+    checkpoint_path = RESULTS_DIR / checkpoint_name
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
     print(f"Loading checkpoint from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -307,13 +309,13 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
         "class_metrics": class_results,
         "confusion_matrix": conf_matrix
     }
-    metrics_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_metrics.json"
+    metrics_file = RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_metrics.json"
     with metrics_file.open("w", encoding="utf-8") as f:
         json.dump(test_report, f, indent=4)
     print(f"Serialized test metrics JSON successfully saved to: {metrics_file}")
 
     # Save visual samples compressed arrays
-    npz_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_vis_samples.npz"
+    npz_file = RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_vis_samples.npz"
     np.savez_compressed(npz_file, **vis_samples_dict)
     print(f"Saved compressed qualitative visual samples array map to: {npz_file}")
 
@@ -346,20 +348,20 @@ if __name__ == "__main__":
     checkpoints_to_run = []
     for ep in EVAL_EPOCHS:
         ckpt_name = f"epoch_{ep}.pth"
-        if (ARTIFACTS_DIR / ckpt_name).exists():
+        if (RESULTS_DIR / ckpt_name).exists():
             checkpoints_to_run.append(ckpt_name)
         else:
-            print(f"Notice: '{ckpt_name}' was not found in {ARTIFACTS_DIR} and will be skipped.")
+            print(f"Notice: '{ckpt_name}' was not found in {RESULTS_DIR} and will be skipped.")
     # Add last.pth
-    if (ARTIFACTS_DIR / "last.pth").exists() and "last.pth" not in checkpoints_to_run:
+    if (RESULTS_DIR / "last.pth").exists() and "last.pth" not in checkpoints_to_run:
         checkpoints_to_run.append("last.pth")
     # Add best.pth
-    if (ARTIFACTS_DIR / "best.pth").exists() and "best.pth" not in checkpoints_to_run:
+    if (RESULTS_DIR / "best.pth").exists() and "best.pth" not in checkpoints_to_run:
         checkpoints_to_run.append("best.pth")
 
 
     if not checkpoints_to_run:
-        print(f"No valid target checkpoints found in {ARTIFACTS_DIR}")
+        print(f"No valid target checkpoints found in {RESULTS_DIR}")
     else:
         print(f"\nSelected {len(checkpoints_to_run)} checkpoint(s) for evaluation: {checkpoints_to_run}")
 
