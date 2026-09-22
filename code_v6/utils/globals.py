@@ -64,11 +64,16 @@ AMP = config["AMP"]
 
 NUM_WORKERS = config["NUM_WORKERS"]
 SOURCE_BALANCE_POWER = float(config.get("SOURCE_BALANCE_POWER", 0.0))
+SEG_POS_WEIGHT = float(config.get("SEG_POS_WEIGHT", 8.0))
 
 SEED = config["SEED"]
 
 MODEL_VERSION = config.get("MODEL_VERSION", "v6")
 MODEL_RUN = config.get("MODEL_RUN", "0")
+
+
+# --------------------------- test
+SEG_THRESHOLD = float(config.get("SEG_THRESHOLD", 0.5))
 
 
 

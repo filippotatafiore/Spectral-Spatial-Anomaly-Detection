@@ -9,9 +9,9 @@ from sklearn.metrics import (
 )
 
 from utils.globals import (
-    DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP,
+    DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
-    MODEL_VERSION, MODEL_RUN,
+    MODEL_VERSION, MODEL_RUN, SEG_THRESHOLD
 )
 from network.trans_UNet import TransUNetSentinel2
 from network.loss import MultiTaskLoss
@@ -26,13 +26,13 @@ RESULTS_DIR = ARTIFACTS_DIR
 
 
 
-def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0.5):
+def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, cls_threshold=0.5, seg_threshold=0.5):
     """
         Computes Image-Level and Pixel-Level Evaluation Metrics.
     """
     cls_targets = np.array(cls_targets)
     cls_preds = np.array(cls_preds)
-    cls_binary = (cls_preds >= threshold).astype(int)
+    cls_binary = (cls_preds >= cls_threshold).astype(int)
 
     # --- Image-level classification metrics
     try:
@@ -51,7 +51,7 @@ def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, threshold=0
     # --- Pixel-level segmentation/localization metrics
     seg_targets_flat = np.concatenate([t.flatten() for t in seg_targets])
     seg_preds_flat = np.concatenate([p.flatten() for p in seg_preds])
-    seg_binary_flat = (seg_preds_flat >= threshold).astype(int)
+    seg_binary_flat = (seg_preds_flat >= seg_threshold).astype(int)
 
     try:
         pix_auc_roc = roc_auc_score(seg_targets_flat, seg_preds_flat)
@@ -109,7 +109,24 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     else:
         print(f"Loaded {checkpoint_name} (Epoch {ckpt_epoch})")
 
-    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0)
+    # ------ Recall-oriented classification threshold (from checkpoint's validation predictions)
+    cls_threshold = 0.5
+    if "val_cls_preds" in checkpoint and "val_cls_targets" in checkpoint:
+        v_preds = np.array(checkpoint["val_cls_preds"])
+        v_targets = np.array(checkpoint["val_cls_targets"])
+        precisions, recalls, thresholds = precision_recall_curve(v_targets, v_preds)
+
+        recalls_aligned = recalls[:-1]
+        max_recall = recalls_aligned.max()
+        best_indices = recalls_aligned == max_recall
+        cls_threshold = float(thresholds[best_indices].max())
+        print(f"Tuned classification threshold: {cls_threshold:.4f} (max recall={max_recall})")
+
+    else:
+        print("No stored validation predictions in checkpoint — falling back to threshold=0.5")
+
+    # ------ Loss function
+    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=SEG_POS_WEIGHT)
     use_amp = AMP and device.type == "cuda"
 
     # ------ Normal and Anomalous Test Datasets
@@ -281,6 +298,8 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 cls_targets_class + norm_cls_targets_snapshot,
                 cls_preds_class + norm_cls_preds_snapshot,
                 seg_targets_class, seg_preds_class,
+                cls_threshold=cls_threshold,
+                seg_threshold=SEG_THRESHOLD,
             )
             class_metrics["Average_Total_Loss"] = cls_total_loss / cls_batches
             class_metrics["Average_Cls_Loss"] = cls_cls_loss / cls_batches
@@ -289,7 +308,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             class_results[cls_name] = class_metrics
 
     # ------ Overall Metrics
-    overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds)
+    overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds, cls_threshold=cls_threshold, seg_threshold=SEG_THRESHOLD)
     overall_metrics["Average_Total_Loss"] = total_overall_loss / total_batches
     overall_metrics["Average_Cls_Loss"] = total_cls_loss / total_batches
     overall_metrics["Average_Seg_BCE_Loss"] = total_seg_bce_loss / total_batches

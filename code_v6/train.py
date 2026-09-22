@@ -6,7 +6,7 @@ import json
 from network.loss import MultiTaskLoss
 from utils.globals import (
     TEST_CLASSES, DEVICE, ARTIFACTS_DIR, EPOCHS, LR, WEIGHT_DECAY,
-    SOURCE_BALANCE_POWER, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
+    SOURCE_BALANCE_POWER, SEG_POS_WEIGHT, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
     MODEL_VERSION, MODEL_RUN,
 )
@@ -15,7 +15,7 @@ from data.dataset import make_loader, make_source_weights, NormalImagesDataset, 
 from utils.splits import split_normals, split_anomal
 
 
-def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, device='cuda'):
+def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, val_cls_preds, val_cls_targets, device='cuda'):
     if isinstance(device, str):
         device = torch.device(device)
     checkpoint = {
@@ -28,6 +28,8 @@ def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_a
         "torch_rng": torch.get_rng_state(),
         "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
         "loader_generator": train_loader.generator.get_state() if train_loader.generator is not None else None,
+        "val_cls_preds": list(val_cls_preds),
+        "val_cls_targets": list(val_cls_targets),
     }
     torch.save(checkpoint, ARTIFACTS_DIR / filename)
 
@@ -40,7 +42,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
     model = model.to(device)
 
     # ------ Loss function
-    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0)
+    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=SEG_POS_WEIGHT)
 
     # ------ Optimizer
     decay_params, no_decay_params = [], []
@@ -189,13 +191,13 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         # Checkpoint saving
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best.pth", device=device)
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best.pth", val_cls_preds, val_cls_targets, device=device)
 
         # Save checkpoint every 10 epochs
         if epoch == epochs:
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", device=device)
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, device=device)
         elif epoch % 10 == 0:
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", device=device)
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, device=device)
 
     print(f"\nTraining Complete. Best Validation Image AUC-ROC: {best_val_auc:.4f}")
 
