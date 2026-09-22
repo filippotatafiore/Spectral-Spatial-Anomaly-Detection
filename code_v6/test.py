@@ -316,6 +316,9 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     overall_metrics["Average_Seg_BCE_Loss"] = total_seg_bce_loss / total_batches
     overall_metrics["Average_Seg_Dice_Loss"] = total_seg_dice_loss / total_batches
 
+    overall_metrics["Classification_Threshold"] = cls_threshold
+    overall_metrics["Segmentation_Threshold"] = SEG_THRESHOLD
+
     conf_matrix = {
         "TN": int(overall_metrics.pop("TN")),
         "FP": int(overall_metrics.pop("FP")),
