@@ -35,7 +35,7 @@ WEIGHT_DECAY: 1e-4
 AMP: true                   # float16 autocast
 
 NUM_WORKERS: 2              # DataLoader worker processes
-SOURCE_BALANCE_POWER: 0.0   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
 SEG_POS_WEIGHT: 8.0         # upweight the loss of anomalous pixels in the segmentation task (anomalous pixels may be rare, so this gives them more importance in the loss)
 
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
@@ -45,4 +45,5 @@ MODEL_RUN: "0"              # model run number
 
 
 # --------------------------- test
-SEG_THRESHOLD: 0.5                 # threshold for pixel-level segmentation predictions
+TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
+SEG_THRESHOLD: 0.5              # threshold for pixel-level segmentation predictions

@@ -11,7 +11,7 @@ from sklearn.metrics import (
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
-    MODEL_VERSION, MODEL_RUN, SEG_THRESHOLD
+    MODEL_VERSION, MODEL_RUN, TARGET_RECALL, SEG_THRESHOLD
 )
 from network.trans_UNet import TransUNetSentinel2
 from network.loss import MultiTaskLoss
@@ -114,13 +114,15 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     if "val_cls_preds" in checkpoint and "val_cls_targets" in checkpoint:
         v_preds = np.array(checkpoint["val_cls_preds"])
         v_targets = np.array(checkpoint["val_cls_targets"])
-        precisions, recalls, thresholds = precision_recall_curve(v_targets, v_preds)
+        _, recalls, thresholds = precision_recall_curve(v_targets, v_preds)
 
         recalls_aligned = recalls[:-1]
-        max_recall = recalls_aligned.max()
-        best_indices = recalls_aligned == max_recall
-        cls_threshold = float(thresholds[best_indices].max())
-        print(f"Tuned classification threshold: {cls_threshold:.4f} (max recall={max_recall})")
+        meets_target = recalls_aligned >= TARGET_RECALL
+        if meets_target.any():
+            cls_threshold = float(thresholds[meets_target].max())
+            print(f"Tuned classification threshold: {cls_threshold:.4f} (targeting recall>={TARGET_RECALL})")
+        else:
+            print(f"No threshold reaches recall>={TARGET_RECALL} on validation — falling back to threshold=0.5")
 
     else:
         print("No stored validation predictions in checkpoint — falling back to threshold=0.5")
