@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import ConcatDataset
 from sklearn.metrics import roc_auc_score
 import json
+import numpy as np
 
 from network.loss import MultiTaskLoss
 from utils.globals import (
@@ -15,7 +16,7 @@ from data.dataset import make_loader, make_source_weights, NormalImagesDataset, 
 from utils.splits import split_normals, split_anomal
 
 
-def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, val_cls_preds, val_cls_targets, device='cuda'):
+def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device='cuda'):
     if isinstance(device, str):
         device = torch.device(device)
     checkpoint = {
@@ -30,6 +31,8 @@ def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_a
         "loader_generator": train_loader.generator.get_state() if train_loader.generator is not None else None,
         "val_cls_preds": list(val_cls_preds),
         "val_cls_targets": list(val_cls_targets),
+        "val_seg_preds": np.concatenate(val_seg_preds, axis=0),
+        "val_seg_targets": np.concatenate(val_seg_targets, axis=0),
     }
     torch.save(checkpoint, ARTIFACTS_DIR / filename)
 
@@ -42,7 +45,8 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
     model = model.to(device)
 
     # ------ Loss function
-    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=SEG_POS_WEIGHT)
+    alpha = beta = gamma = 1.0
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT)
 
     # ------ Optimizer
     decay_params, no_decay_params = [], []
@@ -83,7 +87,10 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
     }
 
     best_val_auc = 0.0
+    best_val_seg_dice = float("inf")
     for epoch in range(1, epochs + 1):
+        train_anom_samples = 0
+        val_anom_samples = 0
 
         # ------ Train
         model.train()
@@ -107,10 +114,12 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
             scaler.step(optimizer)
             scaler.update()
 
-            train_loss += loss.item()
+            train_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
             train_loss_cls += l_cls.item()
             train_loss_seg_bce += l_bce.item()
-            train_loss_seg_dice += l_dice.item()
+            n_anom = (seg_targets.sum(dim=(1, 2)) > 0).sum().item()  # number of anomalous samples in the batch, actually contributing to the loss
+            train_loss_seg_dice += l_dice.item() * n_anom  # weight dice loss accumulator by n_anom
+            train_anom_samples += n_anom
 
         scheduler.step()
 
@@ -119,7 +128,8 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         train_loss /= n_train_batches
         train_loss_cls /= n_train_batches
         train_loss_seg_bce /= n_train_batches
-        train_loss_seg_dice /= n_train_batches
+        train_loss_seg_dice /= max(train_anom_samples, 1)
+        train_loss += gamma * train_loss_seg_dice  # add back the dice loss to the total training loss
 
         # ------ Validation
         model.eval()
@@ -128,6 +138,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         val_loss_seg_bce = 0.0
         val_loss_seg_dice = 0.0
         val_cls_preds, val_cls_targets = [], []
+        val_seg_preds, val_seg_targets = [], []
         
         with torch.no_grad():
             for images, cls_targets, seg_targets in val_loader:
@@ -139,20 +150,25 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
                     cls_logits, seg_logits = model(images)
                     loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_targets, seg_targets)
 
-                val_loss += loss.item()
+                val_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
                 val_loss_cls += l_cls.item()
                 val_loss_seg_bce += l_bce.item()
-                val_loss_seg_dice += l_dice.item()
+                n_anom = (seg_targets.sum(dim=(1, 2)) > 0).sum().item()  # number of anomalous samples in the batch, actually contributing to the loss
+                val_loss_seg_dice += l_dice.item() * n_anom  # weight dice loss accumulator by n_anom
+                val_anom_samples += n_anom
 
                 val_cls_preds.extend(torch.sigmoid(cls_logits).cpu().numpy())
                 val_cls_targets.extend(cls_targets.cpu().numpy())
+                val_seg_preds.append(torch.sigmoid(seg_logits).half().cpu().numpy())
+                val_seg_targets.append(seg_targets.to(torch.uint8).cpu().numpy())
 
         # Compute averages for validation epoch
         n_val_batches = len(val_loader)
         val_loss /= n_val_batches
         val_loss_cls /= n_val_batches
         val_loss_seg_bce /= n_val_batches
-        val_loss_seg_dice /= n_val_batches
+        val_loss_seg_dice /= max(val_anom_samples, 1)
+        val_loss += gamma * val_loss_seg_dice  # add back the dice loss to the total training loss
 
         try:
             val_auc = float(roc_auc_score(val_cls_targets, val_cls_preds))
@@ -191,13 +207,16 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         # Checkpoint saving
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best.pth", val_cls_preds, val_cls_targets, device=device)
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_cls.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+        if val_loss_seg_dice < best_val_seg_dice:
+            best_val_seg_dice = val_loss_seg_dice
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_seg.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
 
         # Save checkpoint every 10 epochs
         if epoch == epochs:
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, device=device)
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
         elif epoch % 10 == 0:
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, device=device)
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
 
     print(f"\nTraining Complete. Best Validation Image AUC-ROC: {best_val_auc:.4f}")
 

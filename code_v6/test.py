@@ -11,7 +11,7 @@ from sklearn.metrics import (
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
-    MODEL_VERSION, MODEL_RUN, TARGET_RECALL, SEG_THRESHOLD
+    MODEL_VERSION, MODEL_RUN, TARGET_RECALL,
 )
 from network.trans_UNet import TransUNetSentinel2
 from network.loss import MultiTaskLoss
@@ -21,6 +21,8 @@ from utils.splits import split_normals, split_anomal
 
 # list of intermediate epochs to evaluate
 EVAL_EPOCHS = [10, 30, 40]
+CLS_THRESHOLD = 0.5  # fallback threshold for image-level classification predictions
+SEG_THRESHOLD = 0.5  # fallback threshold for pixel-level segmentation predictions
 
 RESULTS_DIR = ARTIFACTS_DIR
 
@@ -109,8 +111,13 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     else:
         print(f"Loaded {checkpoint_name} (Epoch {ckpt_epoch})")
 
-    # ------ Recall-oriented classification threshold (from checkpoint's validation predictions)
-    cls_threshold = 0.5
+    # ------ Loss function
+    alpha = beta = gamma = 1.0
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT)
+    use_amp = AMP and device.type == "cuda"
+
+    # ------ Recall-oriented classification threshold tuning (from checkpoint's validation predictions)
+    cls_threshold = CLS_THRESHOLD
     if "val_cls_preds" in checkpoint and "val_cls_targets" in checkpoint:
         v_preds = np.array(checkpoint["val_cls_preds"])
         v_targets = np.array(checkpoint["val_cls_targets"])
@@ -123,13 +130,21 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             print(f"Tuned classification threshold: {cls_threshold:.4f} (targeting recall>={TARGET_RECALL})")
         else:
             print(f"No threshold reaches recall>={TARGET_RECALL} on validation — falling back to threshold=0.5")
-
     else:
         print("No stored validation predictions in checkpoint — falling back to threshold=0.5")
 
-    # ------ Loss function
-    criterion = MultiTaskLoss(alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=SEG_POS_WEIGHT)
-    use_amp = AMP and device.type == "cuda"
+    # ------ Segmentation threshold tuning (from checkpoint's validation predictions)
+    seg_threshold = SEG_THRESHOLD
+    if "val_seg_preds" in checkpoint and "val_seg_targets" in checkpoint:
+        v_seg_preds = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32).ravel()
+        v_seg_targets = np.asarray(checkpoint["val_seg_targets"], dtype=np.float32).ravel()
+        precision_arr, recall_arr, seg_thresholds = precision_recall_curve(v_seg_targets, v_seg_preds)
+        f1_arr = 2 * precision_arr * recall_arr / (precision_arr + recall_arr + 1e-8)
+        best_idx = int(np.nanargmax(f1_arr[:-1]))
+        seg_threshold = float(seg_thresholds[best_idx])
+        print(f"Tuned segmentation threshold: {seg_threshold:.4f} (maximizing val pixel F1={f1_arr[best_idx]:.4f})")
+    else:
+        print("No stored validation pixel predictions in checkpoint — falling back to threshold=0.5")
 
     # ------ Normal and Anomalous Test Datasets
     _, _, normal_test_files = split_normals(root=DATASET_PATH)
@@ -147,6 +162,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     total_seg_dice_loss = 0.0
     total_overall_loss = 0.0
     total_batches = 0
+    total_anom_batches = 0
 
     with torch.no_grad():
         # --- Test on normal images
@@ -204,7 +220,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             }
 
             # Update loss accumulators
-            total_overall_loss += norm_total
+            total_overall_loss += norm_total - gamma * norm_seg_dice  # exclude dice loss (avoid counting all normal batches with zero dice loss)
             total_cls_loss += norm_cls_loss
             total_seg_bce_loss += norm_seg_bce
             total_seg_dice_loss += norm_seg_dice
@@ -283,11 +299,12 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                         vis_count += 1
 
             # Update loss accumulators
-            total_overall_loss += cls_total_loss
+            total_overall_loss += cls_total_loss - gamma * cls_seg_dice  # exclude dice loss (avoid counting all normal batches with zero dice loss)
             total_cls_loss += cls_cls_loss
             total_seg_bce_loss += cls_seg_bce
             total_seg_dice_loss += cls_seg_dice
             total_batches += cls_batches
+            total_anom_batches += cls_batches
 
             # Store
             all_cls_targets.extend(cls_targets_class)
@@ -301,7 +318,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 cls_preds_class + norm_cls_preds_snapshot,
                 seg_targets_class, seg_preds_class,
                 cls_threshold=cls_threshold,
-                seg_threshold=SEG_THRESHOLD,
+                seg_threshold=seg_threshold,
             )
             class_metrics["Average_Total_Loss"] = cls_total_loss / cls_batches
             class_metrics["Average_Cls_Loss"] = cls_cls_loss / cls_batches
@@ -310,14 +327,15 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             class_results[cls_name] = class_metrics
 
     # ------ Overall Metrics
-    overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds, cls_threshold=cls_threshold, seg_threshold=SEG_THRESHOLD)
+    overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds, cls_threshold=cls_threshold, seg_threshold=seg_threshold)
     overall_metrics["Average_Total_Loss"] = total_overall_loss / total_batches
     overall_metrics["Average_Cls_Loss"] = total_cls_loss / total_batches
     overall_metrics["Average_Seg_BCE_Loss"] = total_seg_bce_loss / total_batches
-    overall_metrics["Average_Seg_Dice_Loss"] = total_seg_dice_loss / total_batches
+    overall_metrics["Average_Seg_Dice_Loss"] = total_seg_dice_loss / total_anom_batches
+    overall_metrics["Average_Total_Loss"] += gamma * overall_metrics["Average_Seg_Dice_Loss"]  # add back the dice loss to the total loss
 
     overall_metrics["Classification_Threshold"] = cls_threshold
-    overall_metrics["Segmentation_Threshold"] = SEG_THRESHOLD
+    overall_metrics["Segmentation_Threshold"] = seg_threshold
 
     conf_matrix = {
         "TN": int(overall_metrics.pop("TN")),
@@ -379,9 +397,12 @@ if __name__ == "__main__":
     # Add last.pth
     if (RESULTS_DIR / "last.pth").exists() and "last.pth" not in checkpoints_to_run:
         checkpoints_to_run.append("last.pth")
-    # Add best.pth
-    if (RESULTS_DIR / "best.pth").exists() and "best.pth" not in checkpoints_to_run:
-        checkpoints_to_run.append("best.pth")
+    # Add best_cls.pth
+    if (RESULTS_DIR / "best_cls.pth").exists() and "best_cls.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("best_cls.pth")
+    # Add best_seg.pth
+    if (RESULTS_DIR / "best_seg.pth").exists() and "best_seg.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("best_seg.pth")
 
 
     if not checkpoints_to_run:

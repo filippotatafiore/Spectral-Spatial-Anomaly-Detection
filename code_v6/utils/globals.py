@@ -74,7 +74,6 @@ MODEL_RUN = config.get("MODEL_RUN", "0")
 
 # --------------------------- test
 TARGET_RECALL = float(config.get("TARGET_RECALL", 0.95))
-SEG_THRESHOLD = float(config.get("SEG_THRESHOLD", 0.5))
 
 
 
