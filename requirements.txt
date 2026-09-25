@@ -4,3 +4,5 @@ scikit-learn
 pyyaml
 matplotlib
 tqdm
+timm
+scipy

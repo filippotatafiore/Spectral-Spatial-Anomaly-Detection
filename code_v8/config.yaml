@@ -1,0 +1,57 @@
+# --------------------------- paths
+dataset_path: "Sentinel2_anomaly_detection"
+artifacts_dir: "artifacts"
+
+
+# --------------------------- data
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "landslides", "mines"] # ["ben-ge-8k", "burn_scars", "floods", "landslides", "mines"]
+TEST_CLASSES: ["burn_scars", "landslides", "mines"] # ["burn_scars", "floods", "landslides", "mines"]
+
+NORMAL_VAL_FRACTION: 0.10   # fraction of normals held out for validation
+NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for testing
+ANOMAL_VAL_FRACTION: 0.20   # fraction of anomalies held out for validation
+ANOMAL_TEST_FRACTION: 0.20   # fraction of anomalies held out for validation
+
+SPLIT_SALT: "ssad_1"
+GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val
+
+CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
+
+
+# --------------------------- model
+BACKBONE: "resnet50_softcon"  # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
+INPUT_UPSCALE: 2              # 120 -> 240 before the pretrained ResNet (1 = ablation without upsampling)
+
+IN_CHANNELS: 12               # number of input channels (12 BANDS)
+EMBED_DIM: 512                # embedding dimension (output dim of the CNN encoder, dim of the transformer)
+NUM_ATT_HEADS: 8              # number of attention heads in the transformer
+NUM_TRANS_LAYERS: 4           # number of transformer layers
+DROPOUT: 0.1                  # transformer dropout rate
+
+
+# --------------------------- train
+EPOCHS: 50
+BATCH_IMAGES: 32
+
+LR: 1e-4
+WEIGHT_DECAY: 1e-4
+AMP: true                   # float16 autocast
+
+NUM_WORKERS: 2              # DataLoader worker processes
+SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SEG_POS_WEIGHT: 8.0         # upweight the loss of anomalous pixels in the segmentation task (anomalous pixels may be rare, so this gives them more importance in the loss)
+
+SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
+
+MODEL_VERSION: "v8"         # model version for saving artifacts
+MODEL_RUN: "0"              # model run number
+
+ENCODER_LR_MULT: 0.1        # pretrained ResNet LR = LR * ENCODER_LR_MULT
+WARMUP_EPOCHS: 2            # linear LR warmup (protect pretrained weights from random-head gradients)
+TVERSKY_ALPHA: 0.3          # focal Tversky: weight of false positives
+TVERSKY_BETA: 0.7           # focal Tversky: weight of false negatives (missed anomalous pixels)
+TVERSKY_GAMMA: 1.0          # focal Tversky exponent (1.0 = plain Tversky; >1 focuses on poorly segmented images, <1 on well segmented ones)
+
+
+# --------------------------- test
+TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
