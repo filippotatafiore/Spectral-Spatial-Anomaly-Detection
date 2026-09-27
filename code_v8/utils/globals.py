@@ -80,6 +80,12 @@ TVERSKY_ALPHA = float(config.get("TVERSKY_ALPHA", 0.3))
 TVERSKY_BETA = float(config.get("TVERSKY_BETA", 0.7))
 TVERSKY_GAMMA = float(config.get("TVERSKY_GAMMA", 0.75))
 
+EMA_DECAY = float(config.get("EMA_DECAY", 0.0))
+LAMBDA_MIL = float(config.get("LAMBDA_MIL", 0.0))
+MIL_TOPK = int(config.get("MIL_TOPK", 16))
+AUG_SHIFT = int(config.get("AUG_SHIFT", 0))
+AUG_SPECTRAL = float(config.get("AUG_SPECTRAL", 0.0))
+
 
 # --------------------------- test
 TARGET_RECALL = float(config.get("TARGET_RECALL", 0.95))

@@ -1,11 +1,12 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import WeightedRandomSampler
 from collections import Counter
 import random
 
-from utils.globals import DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE
+from utils.globals import DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE, AUG_SHIFT, AUG_SPECTRAL
 
 
 def _load_image(path, clip=CLIP_REFLECTANCE):
@@ -26,7 +27,7 @@ def _load_image(path, clip=CLIP_REFLECTANCE):
 
 def _random_aug(image, mask):
     """
-        Random flip/rotation applied identically to image+mask
+        Random flip, rotation, translation and per-band gain applied to both image and mask.
     """
     if random.random() < 0.5:
         image = torch.flip(image, dims=[-1])
@@ -38,6 +39,18 @@ def _random_aug(image, mask):
     if k:
         image = torch.rot90(image, k, dims=[-2, -1])
         mask = torch.rot90(mask, k, dims=[-2, -1])
+
+    # Random translation (reflect padding)
+    if AUG_SHIFT > 0:
+        s = AUG_SHIFT
+        y, x = random.randint(0, 2 * s), random.randint(0, 2 * s)
+        image = F.pad(image[None], (s, s, s, s), mode="reflect")[0, :, y:y + 120, x:x + 120]
+        mask = F.pad(mask[None, None], (s, s, s, s), mode="reflect")[0, 0, y:y + 120, x:x + 120]
+
+    # Random per-band gain
+    if AUG_SPECTRAL > 0:
+        image = image * (1.0 + (torch.rand(image.shape[0], 1, 1) * 2 - 1) * AUG_SPECTRAL)
+
     return image, mask
 
 

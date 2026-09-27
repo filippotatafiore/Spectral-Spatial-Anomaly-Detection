@@ -10,7 +10,7 @@ from utils.globals import ARTIFACTS_DIR
 
 MODEL_VERSION = "v8"
 MODEL_RUN = "0"
-MODEL_ID = "best_cls"       # "best_cls" | "best_seg" | "last" | "epoch_XX"
+MODEL_ID = "best_seg"       # "best_cls" | "best_seg" | "last" | "epoch_XX"
 
 
 
@@ -149,7 +149,7 @@ def plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir):
                 axes[idx, 0].axis("off")
 
                 # Ground Truth Anomaly Mask
-                axes[idx, 1].imshow(gt, cmap="gray", interpolation="nearest")
+                axes[idx, 1].imshow(gt, cmap="gray", interpolation="nearest", vmin=0, vmax=1)
                 axes[idx, 1].set_title("Ground Truth Mask", fontsize=9)
                 axes[idx, 1].axis("off")
 

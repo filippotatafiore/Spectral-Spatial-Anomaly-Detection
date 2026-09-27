@@ -34,7 +34,7 @@ EPOCHS: 50
 BATCH_IMAGES: 32
 
 LR: 1e-4
-WEIGHT_DECAY: 1e-4
+WEIGHT_DECAY: 0.05
 AMP: true                   # float16 autocast
 
 NUM_WORKERS: 2              # DataLoader worker processes
@@ -44,13 +44,19 @@ SEG_POS_WEIGHT: 8.0         # upweight the loss of anomalous pixels in the segme
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v8"         # model version for saving artifacts
-MODEL_RUN: "0"              # model run number
+MODEL_RUN: "1"              # model run number
 
 ENCODER_LR_MULT: 0.1        # pretrained ResNet LR = LR * ENCODER_LR_MULT
 WARMUP_EPOCHS: 2            # linear LR warmup (protect pretrained weights from random-head gradients)
 TVERSKY_ALPHA: 0.3          # focal Tversky: weight of false positives
 TVERSKY_BETA: 0.7           # focal Tversky: weight of false negatives (missed anomalous pixels)
 TVERSKY_GAMMA: 1.0          # focal Tversky exponent (1.0 = plain Tversky; >1 focuses on poorly segmented images, <1 on well segmented ones)
+
+EMA_DECAY: 0.999            # exponential moving average of the weights
+LAMBDA_MIL: 0.5             # weight of the image-level (MIL) loss on the top-k pooled segmentation logits
+MIL_TOPK: 16                # pixels pooled by the MIL loss
+AUG_SHIFT: 40               # max random translation (px) (anomalies are always cropped at the image centre, 0 = off)
+AUG_SPECTRAL: 0.05          # max random per-band gain
 
 
 # --------------------------- test

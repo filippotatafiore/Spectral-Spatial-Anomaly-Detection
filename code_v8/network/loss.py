@@ -71,12 +71,15 @@ class MultiTaskLoss(nn.Module):
         Total Loss = alpha * Classification BCE + beta * Segmentation BCE + gamma * Segmentation Dice
     """
 
-    def __init__(self, alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=8.0, tversky_alpha=0.3, tversky_beta=0.7, tversky_gamma=0.75):
+    def __init__(self, alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=8.0, tversky_alpha=0.3, tversky_beta=0.7, tversky_gamma=0.75, lambda_mil=0.0, mil_topk=16):
         super(MultiTaskLoss, self).__init__()
         self.alpha = alpha                      # Weight for Classification BCE loss
         self.beta = beta                        # Weight for Segmentation BCE loss
         self.gamma = gamma                      # Weight for Segmentation Dice loss
         self.seg_pos_weight = seg_pos_weight    # up-weights rare anomalous pixels
+
+        self.lambda_mil = lambda_mil            # Weight for the image-level MIL loss on the segmentation map
+        self.mil_topk = mil_topk                # number of top pixels pooled
 
         self.bce_cls = nn.BCEWithLogitsLoss()
         self.dice_seg = FocalTverskyLoss(tversky_alpha, tversky_beta, tversky_gamma)
@@ -87,5 +90,10 @@ class MultiTaskLoss(nn.Module):
         loss_seg_bce = F.binary_cross_entropy_with_logits(seg_logits, seg_targets, pos_weight=pos_weight)
         loss_seg_dice = self.dice_seg(seg_logits, seg_targets)
 
-        total_loss = (self.alpha * loss_cls) + (self.beta * loss_seg_bce) + (self.gamma * loss_seg_dice)
+        # Image-level MIL loss on the segmentation map
+        seg_img_logits = seg_logits.float().flatten(1).topk(self.mil_topk, dim=1).values.mean(dim=1)
+        loss_mil = self.bce_cls(seg_img_logits, cls_targets)
+
+        total_loss = (self.alpha * loss_cls) + (self.beta * loss_seg_bce) + (self.gamma * loss_seg_dice) + (self.lambda_mil * loss_mil)
+    
         return total_loss, loss_cls, loss_seg_bce, loss_seg_dice

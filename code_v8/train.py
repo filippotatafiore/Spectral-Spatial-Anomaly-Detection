@@ -10,7 +10,7 @@ from utils.globals import (
     SOURCE_BALANCE_POWER, SEG_POS_WEIGHT, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
     MODEL_VERSION, MODEL_RUN,
-    ENCODER_LR_MULT, WARMUP_EPOCHS, TVERSKY_ALPHA, TVERSKY_BETA, TVERSKY_GAMMA,
+    ENCODER_LR_MULT, WARMUP_EPOCHS, TVERSKY_ALPHA, TVERSKY_BETA, TVERSKY_GAMMA, EMA_DECAY, LAMBDA_MIL, MIL_TOPK,
 )
 from network.trans_UNet import build_model
 from data.dataset import make_loader, make_source_weights, NormalImagesDataset, AnomalyImagesDataset
@@ -51,7 +51,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
 
     # ------ Loss function
     alpha = beta = gamma = 1.0
-    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, tversky_alpha=TVERSKY_ALPHA, tversky_beta=TVERSKY_BETA, tversky_gamma=TVERSKY_GAMMA)
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, tversky_alpha=TVERSKY_ALPHA, tversky_beta=TVERSKY_BETA, tversky_gamma=TVERSKY_GAMMA, lambda_mil=LAMBDA_MIL, mil_topk=MIL_TOPK)
 
     # ------ Optimizer (weight decay only on conv/linear weights; lower LR for the pretrained ResNet)
     param_groups = {}
@@ -86,6 +86,10 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
     # ------ Mixed precision scaler
     use_amp = AMP and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    
+    # ------ Exponential moving average of the weights (EMA model is validated and saved)
+    ema = torch.optim.swa_utils.AveragedModel(model, multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(EMA_DECAY), use_buffers=True) if EMA_DECAY > 0 else None
+    eval_model = ema.module if ema is not None else model
 
     # ------ Training loop
     # Metrics History Tracker
@@ -131,6 +135,9 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
             scaler.step(optimizer)
             scaler.update()
 
+            if ema is not None:
+                ema.update_parameters(model)
+
             train_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
             train_loss_cls += l_cls.item()
             train_loss_seg_bce += l_bce.item()
@@ -149,7 +156,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         train_loss += gamma * train_loss_seg_dice  # add back the dice loss to the total training loss
 
         # ------ Validation
-        model.eval()
+        eval_model.eval()
         val_loss = 0.0
         val_loss_cls = 0.0
         val_loss_seg_bce = 0.0
@@ -164,7 +171,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
                 seg_targets = seg_targets.to(device)
 
                 with torch.autocast(device_type=device.type, enabled=use_amp):
-                    cls_logits, seg_logits = model(images)
+                    cls_logits, seg_logits = eval_model(images)
                     loss, l_cls, l_bce, l_dice = criterion(cls_logits, seg_logits, cls_targets, seg_targets)
 
                 val_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
@@ -224,16 +231,16 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         # Checkpoint saving
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_cls.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+            save_model_checkpoint(eval_model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_cls.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
         if val_loss_seg_dice < best_val_seg:
             best_val_seg = val_loss_seg_dice
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_seg.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+            save_model_checkpoint(eval_model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_seg.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
 
         # Save checkpoint every 10 epochs
         if epoch == epochs:
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+            save_model_checkpoint(eval_model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
         elif epoch % 10 == 0:
-            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+            save_model_checkpoint(eval_model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
 
     print(f"\nTraining Complete. Best Validation Image AUC-ROC: {best_val_auc:.4f}")
 

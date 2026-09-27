@@ -2,6 +2,7 @@ import os
 import torch
 import numpy as np
 import json
+import csv
 from pathlib import Path
 from sklearn.metrics import (
     roc_auc_score, precision_recall_curve, auc, f1_score,
@@ -13,7 +14,7 @@ from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
     MODEL_VERSION, MODEL_RUN, TARGET_RECALL,
-    TVERSKY_ALPHA, TVERSKY_BETA, TVERSKY_GAMMA,
+    TVERSKY_ALPHA, TVERSKY_BETA, TVERSKY_GAMMA, LAMBDA_MIL, MIL_TOPK,
 )
 from network.trans_UNet import build_model
 from network.loss import MultiTaskLoss
@@ -99,6 +100,7 @@ def object_metrics(seg_targets, seg_preds, seg_threshold):
             Dice per image, averaged over anomalous images.
     """
     hits = {k: 0 for k in SIZE_BINS}
+    pred_hits, pred_total = 0, 0
     totals = {k: 0 for k in SIZE_BINS}
     dices = []
     for gt, pred in zip(seg_targets, seg_preds):
@@ -107,6 +109,11 @@ def object_metrics(seg_targets, seg_preds, seg_threshold):
             continue
         pred_bin = np.asarray(pred) >= seg_threshold
         dices.append(2.0 * np.logical_and(gt, pred_bin).sum() / (gt.sum() + pred_bin.sum() + 1e-6))
+        
+        pred_labels, n_pred = ndimage.label(pred_bin, structure=CONNECTIVITY)
+        touched = np.unique(pred_labels[gt])            # predicted components overlapping a GT anomaly
+        pred_hits += int((touched > 0).sum())
+        pred_total += n_pred
 
         labels, n_obj = ndimage.label(gt, structure=CONNECTIVITY)
         for obj_id in range(1, n_obj + 1):
@@ -120,6 +127,7 @@ def object_metrics(seg_targets, seg_preds, seg_threshold):
     out = {f"Object_Recall_{k}": (hits[k] / totals[k] if totals[k] else float("nan")) for k in SIZE_BINS}
     out.update({f"N_Objects_{k}": totals[k] for k in SIZE_BINS})
     out["Pixel_Dice_per_image"] = float(np.mean(dices)) if dices else float("nan")
+    out["Object_Precision"] = pred_hits / pred_total if pred_total else float("nan")
     return out
 
 
@@ -158,7 +166,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
 
     # ------ Loss function
     alpha = beta = gamma = 1.0
-    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, tversky_alpha=TVERSKY_ALPHA, tversky_beta=TVERSKY_BETA, tversky_gamma=TVERSKY_GAMMA)
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, tversky_alpha=TVERSKY_ALPHA, tversky_beta=TVERSKY_BETA, tversky_gamma=TVERSKY_GAMMA, lambda_mil=LAMBDA_MIL, mil_topk=MIL_TOPK)
     use_amp = AMP and device.type == "cuda"
 
     # ------ Recall-oriented classification threshold tuning (from checkpoint's validation predictions)
@@ -178,26 +186,35 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     else:
         print("No stored validation predictions in checkpoint — falling back to threshold=0.5")
 
-    # ------ Segmentation threshold tuning (from checkpoint's validation predictions)
+    # ------ Normal and Anomalous splits (validation part needed for the segmentation threshold)
+    _, val_normal_files, normal_test_files = split_normals(root=DATASET_PATH)
+    eval_test_files_dict = split_anomal(root=DATASET_PATH, classes=TEST_CLASSES)
+
+    # ------ Segmentation threshold tuning: maximize a class-balanced per-image score on validation
     seg_threshold = SEG_THRESHOLD
     if "val_seg_preds" in checkpoint and "val_seg_targets" in checkpoint:
-        v_seg_preds = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32).ravel()
-        v_seg_targets = np.asarray(checkpoint["val_seg_targets"], dtype=np.float32).ravel()
-        precision_arr, recall_arr, seg_thresholds = precision_recall_curve(v_seg_targets, v_seg_preds)
-        f1_arr = 2 * precision_arr * recall_arr / (precision_arr + recall_arr + 1e-8)
-        best_idx = int(np.nanargmax(f1_arr[:-1]))
-        seg_threshold = float(seg_thresholds[best_idx])
-        print(f"Tuned segmentation threshold: {seg_threshold:.4f} (maximizing val pixel F1={f1_arr[best_idx]:.4f})")
+        v_seg_preds = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32)   # (N_val, 120, 120)
+        v_seg_targets = np.asarray(checkpoint["val_seg_targets"]) > 0             # (N_val, 120, 120)
+        val_classes = np.array(["normal"] * len(val_normal_files) + [cls for cls in TEST_CLASSES for _ in eval_test_files_dict[cls]["val"]])  # same order as the val loader in train.py
+        assert len(val_classes) == len(v_seg_preds), "validation order differs from train.py"
+        best_score = -1.0
+        for thr in np.arange(0.05, 0.96, 0.05):
+            v_bin = v_seg_preds >= thr
+            scores = [float((~v_bin[val_classes == "normal"].any(axis=(1, 2))).mean())]  # normal images with a clean map
+            for cls in TEST_CLASSES:
+                sel = (val_classes == cls) & v_seg_targets.any(axis=(1, 2))
+                p, t = v_bin[sel], v_seg_targets[sel]
+                scores.append(float((2 * (p & t).sum(axis=(1, 2)) / (p.sum(axis=(1, 2)) + t.sum(axis=(1, 2)) + 1e-6)).mean()))
+            if np.mean(scores) > best_score:
+                best_score, seg_threshold = float(np.mean(scores)), float(thr)
+        print(f"Tuned segmentation threshold: {seg_threshold:.2f} (class-balanced per-image val score={best_score:.4f})")
     else:
         print("No stored validation pixel predictions in checkpoint — falling back to threshold=0.5")
-
-    # ------ Normal and Anomalous Test Datasets
-    _, _, normal_test_files = split_normals(root=DATASET_PATH)
-    eval_test_files_dict = split_anomal(root=DATASET_PATH, classes=TEST_CLASSES)
 
     # ------ Evaluation
     all_cls_targets, all_cls_preds = [], []
     all_seg_targets, all_seg_preds = [], []
+    all_names = []
 
     class_results = {}      # Per-class evaluation
     vis_samples_dict = {}   # For test visualization
@@ -212,6 +229,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     with torch.no_grad():
         # --- Test on normal images
         if len(normal_test_files) > 0:
+            all_names.extend(f"{p.parent.name}/{p.stem}" for p in normal_test_files)
             norm_dataset = NormalImagesDataset(normal_test_files)
             norm_loader = make_loader(norm_dataset, batch_size=BATCH_IMAGES, num_workers=NUM_WORKERS, shuffle=False)
             
@@ -296,7 +314,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             cls_batches = len(cls_loader)
             vis_count = 0
 
-            for imgs, cls_labels, masks, _, _ in cls_loader:
+            for imgs, cls_labels, masks, _, stems in cls_loader:
                 imgs = imgs.to(device)
                 masks_device = masks.to(device)
                 batch_size = imgs.size(0)
@@ -321,6 +339,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 cls_preds_class.extend(cls_probs)
                 seg_targets_class.extend(masks_np)
                 seg_preds_class.extend(seg_probs)
+                all_names.extend(f"{cls_name}/{s}" for s in stems)
 
                 # Store visualization samples
                 for i in range(batch_size):
@@ -376,6 +395,10 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds, cls_threshold=cls_threshold, seg_threshold=seg_threshold)
     overall_metrics.update(object_metrics(all_seg_targets, all_seg_preds, seg_threshold))
     overall_metrics["FP_Components_per_Normal_Image"] = false_alarms_per_image(norm_seg_preds_snapshot, seg_threshold)
+    # Image score from the segmentation map (top-k mean) and fused with the classifier (threshold-free comparison)
+    seg_img_scores = np.array([np.partition(np.asarray(p).ravel(), -MIL_TOPK)[-MIL_TOPK:].mean() for p in all_seg_preds])
+    overall_metrics["Image_AUC_ROC_seg_topk"] = float(roc_auc_score(all_cls_targets, seg_img_scores))
+    overall_metrics["Image_AUC_ROC_fused"] = float(roc_auc_score(all_cls_targets, 0.5 * (np.asarray(all_cls_preds) + seg_img_scores)))
     overall_metrics["Average_Total_Loss"] = total_overall_loss / total_batches
     overall_metrics["Average_Cls_Loss"] = total_cls_loss / total_batches
     overall_metrics["Average_Seg_BCE_Loss"] = total_seg_bce_loss / total_batches
@@ -403,6 +426,18 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     with metrics_file.open("w", encoding="utf-8") as f:
         json.dump(test_report, f, indent=4)
     print(f"Serialized test metrics JSON successfully saved to: {metrics_file}")
+
+    # Per-image predictions for error analysis (missed burn scars, false alarms per normal source, representative samples)
+    csv_file = RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_per_image.csv"
+    with csv_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["image", "target", "cls_prob", "seg_topk_prob", "gt_pixels", "pred_pixels", "dice"])
+        for name, t, p, gt, sp in zip(all_names, all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds):
+            gt, sp = np.asarray(gt) > 0.5, np.asarray(sp)
+            pb = sp >= seg_threshold
+            dice = 2.0 * (gt & pb).sum() / (gt.sum() + pb.sum() + 1e-6) if gt.any() else float("nan")
+            writer.writerow([name, int(t), float(p), float(np.partition(sp.ravel(), -MIL_TOPK)[-MIL_TOPK:].mean()), int(gt.sum()), int(pb.sum()), float(dice)])
+    print(f"Per-image predictions saved to: {csv_file}")
 
     # Save visual samples compressed arrays
     npz_file = RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_vis_samples.npz"
@@ -434,11 +469,11 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     print("\n" + "=" * 110)
     print(" OBJECT-LEVEL RECALL BY ANOMALY SIZE")
     print("=" * 110)
-    print(f"{'Class Name':15s} | " + " | ".join(f"{k:>18s}" for k in SIZE_BINS) + " | Dice/img")
+    print(f"{'Class Name':15s} | " + " | ".join(f"{k:>18s}" for k in SIZE_BINS) + " | Dice/img | Obj Prec")
     for cls_name, m in class_results.items():
         if cls_name == "normal":
             continue
-        print(f"{cls_name:15s} | " + " | ".join(f"{m[f'Object_Recall_{k}']:>7.3f} (n={m[f'N_Objects_{k}']:>5d})" for k in SIZE_BINS) + f" | {m['Pixel_Dice_per_image']:.3f}")
+        print(f"{cls_name:15s} | " + " | ".join(f"{m[f'Object_Recall_{k}']:>7.3f} (n={m[f'N_Objects_{k}']:>5d})" for k in SIZE_BINS) + f" | {m['Pixel_Dice_per_image']:.3f}    | {m['Object_Precision']:.3f}")
     print("=" * 110)
 
     return overall_metrics, class_results
