@@ -3,7 +3,6 @@ venv/
 datasets/**
 Sentinel2_anomaly_detection/**
 Sentinel2_sup_anomaly_detection/**
-new_data/**
 prova.py
 test_preprocessing.py
 artifacts/
