@@ -84,6 +84,7 @@ MODEL_RUN = config.get("MODEL_RUN", "0")
 # --------------------------- test
 TARGET_RECALL = float(config.get("TARGET_RECALL", 0.95))
 CLS_THRESHOLD_MODE = config.get("CLS_THRESHOLD_MODE", "recall")
+TARGET_FPR = float(config.get("TARGET_FPR", 0.15))
 
 
 

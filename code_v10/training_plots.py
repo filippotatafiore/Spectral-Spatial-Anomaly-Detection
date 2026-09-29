@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from utils.globals import ARTIFACTS_DIR
 
 MODEL_VERSION = "v10"
-MODEL_RUN = "0"
+MODEL_RUN = "1"
 
 def plot_training_metrics(metrics_path, output_dir):
     metrics_path = Path(metrics_path)
@@ -90,6 +90,22 @@ def plot_training_metrics(metrics_path, output_dir):
     plt.legend(frameon=True)
     plt.tight_layout()
     plt.savefig(output_dir / "val_auc_curve.png", dpi=300)
+    plt.close()
+
+    # --- Validation metrics summary: image AUC, soft Dice and type accuracy per epoch
+    plt.figure(figsize=(7, 4.5), dpi=150)
+    plt.plot(epochs, history["val_auc"], label="Val image AUC-ROC", linewidth=2)
+    plt.plot(epochs, [1 - v for v in history["val_loss_seg_dice"]], label="Val soft Dice", linewidth=2)
+    if "val_type_acc" in history:
+        plt.plot(epochs, history["val_type_acc"], label="Val type accuracy", linewidth=2)
+    plt.axvline(best_epoch, color="grey", linestyle=":", linewidth=1, label=f"best_cls (ep {best_epoch})")
+    plt.ylim(0, 1.02)
+    plt.xlabel("Epoch")
+    plt.ylabel("Score")
+    plt.title("Validation Metrics During Training")
+    plt.legend(frameon=True, loc="lower right")
+    plt.tight_layout()
+    plt.savefig(output_dir / "val_metrics.png", dpi=300)
     plt.close()
 
     # --- Plot type branch

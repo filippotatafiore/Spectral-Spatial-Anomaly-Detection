@@ -50,9 +50,10 @@ SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segme
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v10"        # model version for saving artifacts
-MODEL_RUN: "0"              # model run number
+MODEL_RUN: "1"              # model run number
 
 
 # --------------------------- test
 TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
-CLS_THRESHOLD_MODE: "recall"    # "recall" (TARGET_RECALL) | "f1"
+CLS_THRESHOLD_MODE: "recall"    # "recall" (TARGET_RECALL) | "f1" | "fpr" (TARGET_FPR)
+TARGET_FPR: 0.15                # max FPR on val region-matched normals (mode "fpr")

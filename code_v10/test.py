@@ -11,11 +11,11 @@ from sklearn.metrics import (
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
-    MODEL_VERSION, MODEL_RUN, TARGET_RECALL, TYPE_LOSS_WEIGHT, CLS_THRESHOLD_MODE
+    MODEL_VERSION, MODEL_RUN, TARGET_RECALL, TYPE_LOSS_WEIGHT, CLS_THRESHOLD_MODE, TARGET_FPR,
 )
 from network.trans_UNet import build_model
 from network.loss import MultiTaskLoss
-from data.dataset import NormalImagesDataset, AnomalyImagesDataset, make_loader
+from data.dataset import NormalImagesDataset, AnomalyImagesDataset, make_loader, _load_image
 from utils.splits import split_normals, split_anomal
 
 
@@ -105,6 +105,60 @@ def dice_per_image(seg_targets, seg_preds, seg_threshold):
     return float(np.mean(d)) if d else float("nan")
 
 
+def image_record(group, path, prob, label, pred, target, seg_threshold, t_true=-1, t_pred=-1):
+    """
+        Per-image scores, metrics and losses.
+    """
+    eps = 1e-6
+    q = np.clip(np.asarray(pred, dtype=np.float64), eps, 1 - eps)
+    t = np.asarray(target, dtype=np.float64)
+    b, tb = q >= seg_threshold, t > 0.5
+    prob = float(np.clip(prob, eps, 1 - eps))
+    r = {
+        "group": group, "file": Path(path).name, "path": str(path),
+        "label": int(label > 0.5), "cls_prob": prob,
+        "cls_bce": float(-np.log(prob) if label > 0.5 else -np.log(1 - prob)),
+        "seg_bce": float(-(SEG_POS_WEIGHT * t * np.log(q) + (1 - t) * np.log(1 - q)).mean()),
+        "type_true": int(t_true), "type_pred": int(t_pred),
+    }
+    if tb.any():
+        inter = (b & tb).sum()
+        r["dice"] = float(2 * inter / (b.sum() + tb.sum()))
+        r["iou"] = float(inter / (b | tb).sum())
+        r["soft_dice_loss"] = float(1 - 2 * (q * t).sum() / (q.sum() + t.sum()))
+    else:
+        r["fp_region"] = int(b.sum() >= 20)
+    return r
+
+
+def _rgb(path):
+    x = _load_image(path).numpy()[[3, 2, 1]].transpose(1, 2, 0)   # B4, B3, B2
+    lo, hi = np.percentile(x, 2), np.percentile(x, 98)
+    return np.clip((x - lo) / (hi - lo + 1e-6), 0, 1).astype(np.float32)
+
+
+def select_vis_samples(records, seg_preds, seg_targets):
+    """
+        Qualitative samples: best / median Dice per anomaly class + the 2 most confident false positives (region-matched normals).
+    """
+    picks = []
+    for c in TEST_CLASSES:
+        idx = sorted((k for k, r in enumerate(records) if r["group"] == c and "dice" in r), key=lambda k: records[k]["dice"])
+        if idx:
+            picks += [(c, "best", idx[-1]), (c, "median", idx[len(idx) // 2])]
+    fps = sorted((k for k, r in enumerate(records) if r["group"].startswith("normal-") and r["group"] != "normal-ben-ge-8k"), key=lambda k: -records[k]["cls_prob"])
+    picks += [(records[k]["group"], f"fp{n}", k) for n, k in enumerate(fps[:2])]
+
+    out = {}
+    for g, tag, k in picks:
+        r = records[k]
+        out[f"{g}_{tag}_rgb"] = _rgb(r["path"])
+        out[f"{g}_{tag}_gt"] = np.asarray(seg_targets[k], dtype=np.float32)
+        out[f"{g}_{tag}_pred"] = np.asarray(seg_preds[k], dtype=np.float32)
+        out[f"{g}_{tag}_info"] = np.array(f"p={r['cls_prob']:.2f}" + (f", Dice={r['dice']:.2f}" if "dice" in r else ""))
+    return out
+
+
 def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     if isinstance(device, str):
         device = torch.device(device)
@@ -146,6 +200,14 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             f1s = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-8)
             cls_threshold = float(thresholds[int(np.nanargmax(f1s))])
             print(f"Tuned classification threshold: {cls_threshold:.4f} (max val F1={np.nanmax(f1s):.4f})")
+        elif CLS_THRESHOLD_MODE == "fpr":
+            _, val_normal_files, _ = split_normals(root=DATASET_PATH)
+            n_vn = len(val_normal_files)
+            assert (v_targets[:n_vn] == 0).all()  # val loader order: normals first, then anomalies
+            keep = np.r_[[p.parent.name != "ben-ge-8k" for p in val_normal_files], np.ones(len(v_preds) - n_vn, dtype=bool)]
+            fpr_v, tpr_v, thr_v = roc_curve(v_targets[keep], v_preds[keep])
+            cls_threshold = float(thr_v[np.nonzero(fpr_v <= TARGET_FPR)[0][-1]])
+            print(f"Tuned classification threshold: {cls_threshold:.4f} (val FPR on region-matched normals <= {TARGET_FPR})")
         else:
             recalls_aligned = recalls[:-1]
             meets_target = recalls_aligned >= TARGET_RECALL
@@ -160,13 +222,17 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     # ------ Segmentation threshold tuning (from checkpoint's validation predictions)
     seg_threshold = SEG_THRESHOLD
     if "val_seg_preds" in checkpoint and "val_seg_targets" in checkpoint:
-        v_seg_preds = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32).ravel()
-        v_seg_targets = np.asarray(checkpoint["val_seg_targets"], dtype=np.float32).ravel()
-        precision_arr, recall_arr, seg_thresholds = precision_recall_curve(v_seg_targets, v_seg_preds)
-        f1_arr = 2 * precision_arr * recall_arr / (precision_arr + recall_arr + 1e-8)
-        best_idx = int(np.nanargmax(f1_arr[:-1]))
-        seg_threshold = float(seg_thresholds[best_idx])
-        print(f"Tuned segmentation threshold: {seg_threshold:.4f} (maximizing val pixel F1={f1_arr[best_idx]:.4f})")
+        v_sp = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32)
+        v_st = np.asarray(checkpoint["val_seg_targets"]) > 0
+        anom = v_st.any(axis=(1, 2))
+        v_sp, v_st = v_sp[anom], v_st[anom]
+        grid = np.round(np.arange(0.05, 0.96, 0.025), 3)
+        dices = []
+        for t in grid:
+            b = v_sp >= t
+            dices.append(np.mean(2 * (b & v_st).sum(axis=(1, 2)) / (b.sum(axis=(1, 2)) + v_st.sum(axis=(1, 2)) + 1e-6)))
+        seg_threshold = float(grid[int(np.argmax(dices))])
+        print(f"Tuned segmentation threshold: {seg_threshold:.4f} (maximizing val mean per-image Dice={max(dices):.4f})")
     else:
         print("No stored validation pixel predictions in checkpoint — falling back to threshold=0.5")
 
@@ -189,6 +255,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     total_anom_batches = 0
 
     type_true, type_pred, e2e_true, e2e_pred, norm_type_pred, anom_names = [], [], [], [], [], []
+    anom_paths, anom_classes = [], []
 
     with torch.no_grad():
         # --- Test on normal images
@@ -317,27 +384,6 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 seg_targets_class.extend(masks_np)
                 seg_preds_class.extend(seg_probs)
 
-                # Store visualization samples
-                for i in range(batch_size):
-                    if vis_count < 2:       # 2 samples per class
-                        img_np = imgs[i].cpu().numpy()
-                        # Extract true color RGB
-                        r = img_np[3]   # B4: red
-                        g = img_np[2]   # B3: green
-                        b = img_np[1]   # B2: blue
-                        rgb = np.stack([r, g, b], axis=-1)
-                        # Normalize RGB values
-                        rgb_min, rgb_max = rgb.min(), rgb.max()
-                        if rgb_max > rgb_min:
-                            rgb = (rgb - rgb_min) / (rgb_max - rgb_min)
-                        else:
-                            rgb = np.zeros_like(rgb)
-
-                        vis_samples_dict[f"{cls_name}_{vis_count}_rgb"] = rgb
-                        vis_samples_dict[f"{cls_name}_{vis_count}_gt"] = masks_np[i]
-                        vis_samples_dict[f"{cls_name}_{vis_count}_pred"] = seg_probs[i]
-                        vis_count += 1
-
             # Update loss accumulators
             total_overall_loss += cls_total_loss - gamma * cls_seg_dice  # exclude dice loss (avoid counting all normal batches with zero dice loss)
             total_cls_loss += cls_cls_loss
@@ -351,6 +397,8 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             all_cls_preds.extend(cls_preds_class)
             all_seg_targets.extend(seg_targets_class)
             all_seg_preds.extend(seg_preds_class)
+            anom_paths.extend(t[0] for t in test_triples)
+            anom_classes.extend([cls_name] * len(test_triples))
 
             # Per-class metrics
             class_metrics = evaluate_metrics(
@@ -391,6 +439,13 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     norm_pos = np.array(norm_cls_preds_snapshot) >= cls_threshold
     fp_by_source = {s: {"FP": int(norm_pos[src == s].sum()), "N": int((src == s).sum())} for s in sorted(set(src))}
 
+    hard = src != "ben-ge-8k"
+    n_norm = len(norm_cls_preds_snapshot)
+    anom_t, anom_p = np.array(all_cls_targets[n_norm:]), np.array(all_cls_preds[n_norm:])
+    hard_p = np.array(norm_cls_preds_snapshot)[hard]
+    overall_metrics["Image_AUC_ROC_hard_normals"] = float(roc_auc_score(np.r_[anom_t, np.zeros(len(hard_p))], np.r_[anom_p, hard_p]))
+    overall_metrics["Image_FPR_hard_normals"] = float((hard_p >= cls_threshold).mean())
+
     K, tt, tp_ = len(TEST_CLASSES), np.array(type_true), np.array(type_pred)
     v = tt >= 0
     type_metrics = {
@@ -401,6 +456,14 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
         "EndToEnd_4class_Confusion(0=normal)": confusion_matrix(e2e_true, e2e_pred, labels=list(range(K + 1))).tolist(),
         "Type_Pred_on_Normals_by_Source": {s: np.bincount(np.array(norm_type_pred)[src == s], minlength=K).tolist() for s in sorted(set(src))},
     } if v.any() else {}
+
+
+    # --- Per-image records (robust / distribution plots) + qualitative samples
+    records = [image_record(f"normal-{p.parent.name}", p, all_cls_preds[i], 0.0, all_seg_preds[i], all_seg_targets[i], seg_threshold, -1, norm_type_pred[i])
+               for i, p in enumerate(normal_test_files)]
+    records += [image_record(c, p, all_cls_preds[n_norm + j], all_cls_targets[n_norm + j], all_seg_preds[n_norm + j], all_seg_targets[n_norm + j], seg_threshold, type_true[j], type_pred[j])
+                for j, (c, p) in enumerate(zip(anom_classes, anom_paths))]
+    vis_samples_dict = select_vis_samples(records, all_seg_preds, all_seg_targets)
 
 
     conf_matrix = {
@@ -426,10 +489,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     print(f"Serialized test metrics JSON successfully saved to: {metrics_file}")
 
     # Save classification scores JSON
-    scores = {
-        "normal": [{"file": p.name, "source": p.parent.name, "cls_prob": float(c)} for p, c in zip(normal_test_files, norm_cls_preds_snapshot)],
-        "anomaly": [{"file": n, "cls_prob": float(c)} for n, c in zip(anom_names, all_cls_preds[len(norm_cls_preds_snapshot):])],
-    }
+    scores = {"cls_threshold": cls_threshold, "seg_threshold": seg_threshold, "records": records}
     with (RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_scores.json").open("w") as f:
         json.dump(scores, f, indent=1)
 
