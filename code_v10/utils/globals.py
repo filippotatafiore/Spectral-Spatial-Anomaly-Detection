@@ -80,6 +80,8 @@ SEED = config["SEED"]
 MODEL_VERSION = config.get("MODEL_VERSION", "v6")
 MODEL_RUN = config.get("MODEL_RUN", "0")
 
+CLS_LABEL_SMOOTHING = float(config.get("CLS_LABEL_SMOOTHING", 0.0))
+
 
 # --------------------------- test
 TARGET_RECALL = float(config.get("TARGET_RECALL", 0.95))

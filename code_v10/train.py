@@ -10,7 +10,7 @@ from utils.globals import (
     SOURCE_BALANCE_POWER, SEG_POS_WEIGHT, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
     BACKBONE, ENCODER_LR_MULT, WARMUP_EPOCHS, TYPE_LOSS_WEIGHT,
-    MODEL_VERSION, MODEL_RUN,
+    MODEL_VERSION, MODEL_RUN, CLS_LABEL_SMOOTHING,
 )
 from network.trans_UNet import build_model
 from data.dataset import make_loader, make_source_weights, NormalImagesDataset, AnomalyImagesDataset, _load_image
@@ -47,7 +47,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
 
     # ------ Loss function
     alpha = beta = gamma = 1.0
-    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT)
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT, cls_smoothing=CLS_LABEL_SMOOTHING)
 
     # ------ Optimizer (weight decay only on conv/linear weights; lower LR for the pretrained ResNet)
     param_groups = {}

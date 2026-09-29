@@ -11,7 +11,7 @@ from sklearn.metrics import (
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
     IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
-    MODEL_VERSION, MODEL_RUN, TARGET_RECALL, TYPE_LOSS_WEIGHT, CLS_THRESHOLD_MODE, TARGET_FPR,
+    MODEL_VERSION, MODEL_RUN, CLS_LABEL_SMOOTHING, TARGET_RECALL, TYPE_LOSS_WEIGHT, CLS_THRESHOLD_MODE, TARGET_FPR,
 )
 from network.trans_UNet import build_model
 from network.loss import MultiTaskLoss
@@ -186,7 +186,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
 
     # ------ Loss function
     alpha = beta = gamma = 1.0
-    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT)
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT, cls_smoothing=CLS_LABEL_SMOOTHING)
     use_amp = AMP and device.type == "cuda"
 
     # ------ Oriented classification threshold tuning (from checkpoint's validation predictions)

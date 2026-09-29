@@ -38,20 +38,21 @@ class MultiTaskLoss(nn.Module):
         Total Loss = alpha * Classification BCE + beta * Segmentation BCE + gamma * Segmentation Dice
     """
 
-    def __init__(self, alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=8.0, delta=0.0):
+    def __init__(self, alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=8.0, delta=0.0, cls_smoothing=0.0):
         super(MultiTaskLoss, self).__init__()
         self.alpha = alpha                      # Weight for Classification BCE loss
         self.beta = beta                        # Weight for Segmentation BCE loss
         self.gamma = gamma                      # Weight for Segmentation Dice loss
         self.seg_pos_weight = seg_pos_weight    # up-weights rare anomalous pixels
         self.delta = delta                      # weight of the anomaly-type CE
+        self.cls_smoothing = cls_smoothing
         
         self.bce_cls = nn.BCEWithLogitsLoss()
         self.dice_seg = DiceLoss()
         self.ce_type = nn.CrossEntropyLoss(ignore_index=-1)   # -1 = normal image (no type)
 
     def forward(self, cls_logits, seg_logits, cls_targets, seg_targets, type_logits=None, type_targets=None):
-        loss_cls = self.bce_cls(cls_logits, cls_targets)
+        loss_cls = self.bce_cls(cls_logits, cls_targets * (1 - 2 * self.cls_smoothing) + self.cls_smoothing)
         
         pos_weight = torch.tensor(self.seg_pos_weight, device=seg_logits.device)
         loss_seg_bce = F.binary_cross_entropy_with_logits(seg_logits, seg_targets, pos_weight=pos_weight)

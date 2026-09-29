@@ -50,7 +50,9 @@ SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segme
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v10"        # model version for saving artifacts
-MODEL_RUN: "2"              # model run number
+MODEL_RUN: "3"              # model run number
+
+CLS_LABEL_SMOOTHING: 0.05   # label smoothing for the classification head (0.0 = no smoothing, 0.5 = max smoothing)
 
 
 # --------------------------- test
