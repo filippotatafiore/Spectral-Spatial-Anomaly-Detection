@@ -1,0 +1,2410 @@
+
+============================== config.yaml ==============================
+
+# --------------------------- paths
+dataset_path: "Sentinel2_sup_anomaly_detection"
+artifacts_dir: "artifacts"
+
+
+# --------------------------- data
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "deforestation", "mines"]
+TEST_CLASSES: ["burn_scars", "deforestation", "mines"]
+
+NORMAL_VAL_FRACTION: 0.10   # fraction of normals held out for validation
+NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for testing
+ANOMAL_VAL_FRACTION: 0.20   # fraction of anomalies held out for validation
+ANOMAL_TEST_FRACTION: 0.20   # fraction of anomalies held out for validation
+
+SPLIT_SALT: "ssad_1"
+GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val
+
+CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
+
+MAX_SHIFT: 40               # random translation (px) in training data augmentation
+
+
+# --------------------------- model
+BACKBONE: "cnn"               # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
+INPUT_UPSCALE: 1              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
+
+IN_CHANNELS: 12         # number of input channels (12 BANDS)
+EMBED_DIM: 512          # embedding dimension (output dim of the CNN encoder, dim of the transformer)
+NUM_ATT_HEADS: 8        # number of attention heads in the transformer
+NUM_TRANS_LAYERS: 4     # number of transformer layers
+DROPOUT: 0.1            # transformer dropout rate
+
+
+# --------------------------- train
+EPOCHS: 50
+BATCH_IMAGES: 32
+
+LR: 1e-4
+WEIGHT_DECAY: 1e-4
+AMP: true                   # float16 autocast
+
+ENCODER_LR_MULT: 0.1
+WARMUP_EPOCHS: 2
+TYPE_LOSS_WEIGHT: 0.5          # 0.0 = ablation without the anomaly-type head
+
+NUM_WORKERS: 2              # DataLoader worker processes
+SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segmentation task (more importance in the loss to anomalous pixels)
+
+SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
+
+MODEL_VERSION: "v11"        # model version for saving artifacts
+MODEL_RUN: "0"              # model run number
+
+
+# --------------------------- test
+TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
+CLS_THRESHOLD_MODE: "recall"    # "recall" (TARGET_RECALL) | "f1" | "fpr" (TARGET_FPR)
+TARGET_FPR: 0.15                # max FPR on val region-matched normals (mode "fpr")
+
+============================== eval_plots.py ==============================
+
+import sys
+import os
+import json
+import numpy as np
+from pathlib import Path
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, roc_auc_score
+
+from utils.globals import ARTIFACTS_DIR
+
+
+MODEL_VERSION = "v10"
+MODEL_RUN = "2"
+MODEL_ID = "best_cls"       # "best_cls" | "best_seg" | "last" | "epoch_XX"
+
+
+
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.size"] = 10
+plt.rcParams["axes.grid"] = True
+plt.rcParams["grid.alpha"] = 0.3
+plt.rcParams["grid.linestyle"] = "--"
+
+
+def _plot_cm(cm, labels, title, path):
+    cm = np.array(cm)
+    cmn = cm / np.maximum(cm.sum(axis=1, keepdims=True), 1)   # row-normalized = recall per true class
+    plt.figure(figsize=(1.4 * len(labels) + 2.5, 1.2 * len(labels) + 1.8), dpi=150)
+    plt.imshow(cmn, cmap=plt.cm.Blues, vmin=0, vmax=1)
+    plt.colorbar(label="Row-normalized")
+    plt.xticks(range(len(labels)), labels, rotation=30, ha="right")
+    plt.yticks(range(len(labels)), labels)
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            plt.text(j, i, f"{cm[i, j]}\n({cmn[i, j]:.0%})", ha="center", va="center", fontsize=8, color="white" if cmn[i, j] > 0.5 else "black")
+    plt.ylabel("Ground Truth")
+    plt.xlabel("Predicted")
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(path, dpi=300)
+    plt.close()
+
+
+def _prf_from_cm(cm):
+    cm = np.array(cm, dtype=float)
+    tp = np.diag(cm)
+    p = tp / np.maximum(cm.sum(axis=0), 1)
+    r = tp / np.maximum(cm.sum(axis=1), 1)
+    f = 2 * p * r / np.maximum(p + r, 1e-12)
+    return p, r, f
+
+
+def plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir, scores_path=None):
+    metrics_json_path = Path(metrics_json_path)
+    vis_samples_path = Path(vis_samples_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not metrics_json_path.exists():
+        print(f"Error: Evaluation metrics JSON file not found at {metrics_json_path}")
+        return
+
+    with metrics_json_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    overall = data["overall_metrics"]
+    class_metrics = data["class_metrics"]
+    conf_matrix = data["confusion_matrix"]
+
+    # ------ Confusion Matrix for Binary Classification
+    plt.figure(figsize=(5, 4.5), dpi=150)
+    cm_arr = np.array([
+        [conf_matrix["TN"], conf_matrix["FP"]],
+        [conf_matrix["FN"], conf_matrix["TP"]]
+    ])
+    
+    plt.imshow(cm_arr, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title("Image-Level Classification Confusion Matrix")
+    plt.colorbar()
+    tick_marks = np.arange(2)
+    plt.xticks(tick_marks, ["Normal (0)", "Anomalous (1)"])
+    plt.yticks(tick_marks, ["Normal (0)", "Anomalous (1)"])
+
+    # Annotate counts inside the confusion matrix
+    thresh = cm_arr.max() / 2.0
+    for i in range(2):
+        for j in range(2):
+            plt.text(j, i, format(cm_arr[i, j], 'd'),
+                     ha="center", va="center",
+                     color="white" if cm_arr[i, j] > thresh else "black",
+                     fontweight="bold")
+
+    plt.ylabel("Ground Truth")
+    plt.xlabel("Predicted Label")
+    plt.tight_layout()
+    plt.savefig(output_dir / "confusion_matrix.png", dpi=300)
+    plt.close()
+
+
+    # ------ Anomaly type: confusion matrices + precision / recall / F1
+    tm = data.get("type_metrics", {})
+    if tm:
+        names = [c.replace("_", " ").title() for c in data["type_classes"]]
+        _plot_cm(tm["Type_Confusion(rows=true)"], names, "Anomaly Type Confusion Matrix\n(anomalous test images)", output_dir / "type_confusion_matrix.png")
+        _plot_cm(tm["EndToEnd_4class_Confusion(0=normal)"], ["Normal"] + names, "End-to-End Confusion Matrix\n(binary head + type head)", output_dir / "e2e_confusion_matrix.png")
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), dpi=150)
+        for ax, key, labs, title in [(axes[0], "Type_Confusion(rows=true)", names, "Anomaly type (anomalous images)"),
+                                     (axes[1], "EndToEnd_4class_Confusion(0=normal)", ["Normal"] + names, "End-to-end (4 classes)")]:
+            p, r, f = _prf_from_cm(tm[key])
+            xl = np.arange(len(labs) + 1)
+            for n, (vals, name, col) in enumerate([(p, "Precision", "#1f77b4"), (r, "Recall", "#ff7f0e"), (f, "F1", "#2ca02c")]):
+                ax.bar(xl + (n - 1) * 0.25, np.r_[vals, vals.mean()], 0.25, label=name, color=col)
+            ax.set_xticks(xl)
+            ax.set_xticklabels(labs + ["Macro avg"], fontsize=8)
+            ax.set_ylim(0, 1.05)
+            ax.set_title(title)
+            ax.legend(frameon=True, loc="lower left", fontsize=8)
+        plt.suptitle("Anomaly Classification Metrics", fontweight="bold")
+        plt.tight_layout()
+        plt.savefig(output_dir / "type_metrics.png", dpi=300)
+        plt.close()
+
+
+    # ------ Loss Components Decomposed by Anomaly Class
+    classes = [c for c in class_metrics.keys() if c != "normal"]
+    cls_bce_list = [class_metrics[c]["Average_Cls_Loss"] for c in classes]
+    seg_bce_list = [class_metrics[c]["Average_Seg_BCE_Loss"] for c in classes]
+    seg_dice_list = [class_metrics[c]["Average_Seg_Dice_Loss"] for c in classes]
+
+    x = np.arange(len(classes))
+    width = 0.25
+
+    plt.figure(figsize=(8, 5), dpi=150)
+    plt.bar(x - width, cls_bce_list, width, label="Classification BCE", color="#2ca02c")
+    plt.bar(x, seg_bce_list, width, label="Segmentation BCE", color="#9467bd")
+    plt.bar(x + width, seg_dice_list, width, label="Segmentation Dice", color="#e377c2")
+
+    plt.xlabel("Anomaly Class")
+    plt.ylabel("Average Evaluation Loss")
+    plt.title("Test-Set Loss Component Decomposition by Anomaly Type")
+    plt.xticks(x, [c.replace("_", " ").title() for c in classes])
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "anomaly_loss_comparison.png", dpi=300)
+    plt.close()
+
+
+    # ------ Performance Metrics Comparison (Bar Chart)
+    plt.figure(figsize=(8, 5), dpi=150)
+    img_auc_list = [class_metrics[c]["Image_AUC_ROC"] for c in classes]
+    pix_auc_list = [class_metrics[c]["Pixel_AUC_ROC"] for c in classes]
+    pix_dice_list = [class_metrics[c]["Pixel_Dice"] for c in classes]
+    pix_iou_list = [class_metrics[c]["Pixel_IoU"] for c in classes]
+
+    plt.bar(x - 1.5*width/2, img_auc_list, width/2, label="Image AUC-ROC", color="#1f77b4")
+    plt.bar(x - width/4, pix_auc_list, width/2, label="Pixel AUC-ROC", color="#aec7e8")
+    plt.bar(x + width/4, pix_dice_list, width/2, label="Pixel Dice", color="#ff7f0e")
+    plt.bar(x + 1.5*width/2, pix_iou_list, width/2, label="Pixel IoU (Jaccard)", color="#ffbb78")
+
+    plt.xlabel("Anomaly Class")
+    plt.ylabel("Score")
+    plt.title("Image Classification and Pixel Anomaly Localization Scores")
+    plt.xticks(x, [c.replace("_", " ").title() for c in classes])
+    plt.ylim(0, 1.05)
+    plt.legend(frameon=True, loc="lower right")
+    plt.tight_layout()
+    plt.savefig(output_dir / "class_metrics_comparison.png", dpi=300)
+    plt.close()
+
+
+    # ------ Aggregated metrics: macro mean +- std over anomaly types vs pooled over all test images
+    agg_keys = [("Image_AUC_ROC", "Image AUC-ROC"), ("Image_AUC_ROC_matched_normals", "Image AUC-ROC\n(matched normals)"),
+                ("Pixel_AUC_ROC", "Pixel AUC-ROC"), ("Pixel_AUC_PR", "Pixel AUC-PR"),
+                ("Pixel_Dice", "Pixel Dice"), ("Pixel_IoU", "Pixel IoU"), ("Pixel_Dice_per_image", "Dice / image")]
+    pooled_key = {"Image_AUC_ROC_matched_normals": "Image_AUC_ROC_hard_normals"}
+    macro = np.array([[class_metrics[c].get(k, np.nan) for c in classes] for k, _ in agg_keys], dtype=float)
+    pooled = [overall.get(pooled_key.get(k, k), np.nan) for k, _ in agg_keys]
+    xa = np.arange(len(agg_keys))
+    plt.figure(figsize=(11, 5), dpi=150)
+    plt.bar(xa - 0.2, np.nanmean(macro, axis=1), 0.4, yerr=np.nanstd(macro, axis=1), capsize=3, label="Macro mean ± std over anomaly types", color="#1f77b4")
+    plt.bar(xa + 0.2, pooled, 0.4, label="Pooled over all test images", color="#ff7f0e")
+    for i, (m, p) in enumerate(zip(np.nanmean(macro, axis=1), pooled)):
+        plt.text(i - 0.2, m + 0.01, f"{m:.2f}", ha="center", fontsize=7)
+        plt.text(i + 0.2, p + 0.01, f"{p:.2f}", ha="center", fontsize=7)
+    plt.xticks(xa, [n for _, n in agg_keys], fontsize=8)
+    plt.ylim(0, 1.08)
+    plt.ylabel("Score")
+    plt.title("Aggregated Detection and Localization Metrics")
+    plt.legend(frameon=True, loc="lower left")
+    plt.tight_layout()
+    plt.savefig(output_dir / "aggregate_metrics.png", dpi=300)
+    plt.close()
+
+    # ------ Per-image plots
+    if scores_path is not None and Path(scores_path).exists():
+        with Path(scores_path).open("r", encoding="utf-8") as f:
+            sc = json.load(f)
+        recs, thr = sc["records"], sc["cls_threshold"]
+        normals = [r for r in recs if r["group"].startswith("normal-")]
+        hard = [r for r in normals if r["group"] != "normal-ben-ge-8k"]
+        anoms = [r for r in recs if not r["group"].startswith("normal-") and r["label"] == 1]
+
+        # --- ROC curves
+        def _roc(pos, neg, label, ax, **kw):
+            y = np.r_[np.ones(len(pos)), np.zeros(len(neg))]
+            s = np.r_[[r["cls_prob"] for r in pos], [r["cls_prob"] for r in neg]]
+            fpr, tpr, _ = roc_curve(y, s)
+            ax.plot(fpr, tpr, label=f"{label} (AUC={roc_auc_score(y, s):.3f})", **kw)
+
+        fig, ax = plt.subplots(figsize=(6.5, 6), dpi=150)
+        _roc(anoms, normals, "All anomalies vs all normals", ax, linewidth=2)
+        _roc(anoms, hard, "All anomalies vs region-matched normals", ax, linewidth=2, linestyle="--")
+        for c in classes:
+            _roc([r for r in anoms if r["group"] == c], [r for r in normals if r["group"] == f"normal-{c}"], f"{c.replace('_', ' ').title()} vs matched normals", ax, linewidth=1)
+        tpr_op = np.mean([r["cls_prob"] >= thr for r in anoms])
+        ax.scatter(np.mean([r["cls_prob"] >= thr for r in normals]), tpr_op, color="black", zorder=5, label=f"Operating point, all normals (thr={thr:.2f})")
+        ax.scatter(np.mean([r["cls_prob"] >= thr for r in hard]), tpr_op, color="black", marker="x", zorder=5, label="Operating point, region-matched normals")
+        ax.plot([0, 1], [0, 1], color="grey", linewidth=0.8, linestyle=":")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate (Recall)")
+        ax.set_title("Image-Level ROC Curves")
+        ax.legend(frameon=True, fontsize=7, loc="lower right")
+        plt.tight_layout()
+        plt.savefig(output_dir / "roc_curves.png", dpi=300)
+        plt.close()
+
+        # --- Score distributions per normal source / anomaly class
+        groups = [g for g in ["normal-ben-ge-8k"] + [f"normal-{c}" for c in classes] + classes if any(r["group"] == g for r in recs)]
+        data_s = [[r["cls_prob"] for r in recs if r["group"] == g and (g.startswith("normal-") or r["label"] == 1)] for g in groups]
+        rng = np.random.default_rng(0)
+        plt.figure(figsize=(10, 5), dpi=150)
+        plt.boxplot(data_s, showfliers=False, widths=0.5)
+        for i, d in enumerate(data_s, start=1):
+            plt.scatter(i + rng.uniform(-0.15, 0.15, len(d)), d, s=5, alpha=0.4, color="#d62728" if groups[i - 1].startswith("normal-") else "#1f77b4")
+        plt.axhline(thr, color="black", linestyle="--", linewidth=1, label=f"Classification threshold ({thr:.2f})")
+        plt.xticks(range(1, len(groups) + 1), [g.replace("normal-", "Normal\n").replace("_", " ") for g in groups], fontsize=8)
+        plt.ylabel("Predicted anomaly probability")
+        plt.title("Image-Level Anomaly Score Distributions (red = normal, blue = anomalous)")
+        plt.legend(frameon=True)
+        plt.tight_layout()
+        plt.savefig(output_dir / "score_distributions.png", dpi=300)
+        plt.close()
+
+        # --- Per-image Dice / IoU distributions
+        seg_groups = classes + ["all"]
+        dice_d = [[r["dice"] for r in anoms if "dice" in r and (g == "all" or r["group"] == g)] for g in seg_groups]
+        iou_d = [[r["iou"] for r in anoms if "iou" in r and (g == "all" or r["group"] == g)] for g in seg_groups]
+        xs = np.arange(len(seg_groups))
+        plt.figure(figsize=(8, 5), dpi=150)
+        b1 = plt.boxplot(dice_d, positions=xs - 0.18, widths=0.3, patch_artist=True, showfliers=False, showmeans=True)
+        b2 = plt.boxplot(iou_d, positions=xs + 0.18, widths=0.3, patch_artist=True, showfliers=False, showmeans=True)
+        for p in b1["boxes"]:
+            p.set_facecolor("#ff7f0e")
+        for p in b2["boxes"]:
+            p.set_facecolor("#ffbb78")
+        plt.xticks(xs, [g.replace("_", " ").title() for g in seg_groups])
+        plt.ylim(0, 1.02)
+        plt.ylabel("Per-image score")
+        plt.legend([b1["boxes"][0], b2["boxes"][0]], ["Dice", "IoU"], frameon=True, loc="lower left")
+        plt.title("Per-Image Localization Quality (anomalous test images)")
+        plt.tight_layout()
+        plt.savefig(output_dir / "per_image_seg_metrics.png", dpi=300)
+        plt.close()
+
+        # --- Robust loss decomposition: median with IQR bars
+        plt.figure(figsize=(8, 5), dpi=150)
+        for n, (k, name, col) in enumerate([("cls_bce", "Classification BCE", "#2ca02c"), ("seg_bce", "Segmentation BCE", "#9467bd"), ("soft_dice_loss", "Segmentation Dice", "#e377c2")]):
+            vals = [np.array([r[k] for r in anoms if r["group"] == c and k in r]) for c in classes]
+            med = np.array([np.median(v) for v in vals])
+            err = [med - [np.percentile(v, 25) for v in vals], [np.percentile(v, 75) for v in vals] - med]
+            plt.bar(x + (n - 1) * width, med, width, yerr=err, capsize=3, label=name, color=col)
+        plt.xticks(x, [c.replace("_", " ").title() for c in classes])
+        plt.ylabel("Median loss (IQR bars)")
+        plt.title("Test-Set Loss Components by Anomaly Type (median)")
+        plt.legend(frameon=True)
+        plt.tight_layout()
+        plt.savefig(output_dir / "anomaly_loss_comparison_robust.png", dpi=300)
+        plt.close()
+
+
+    # ------ Qualitative Interpretability Subplots
+    if vis_samples_path.exists():
+        samples = np.load(vis_samples_path, allow_pickle=True)
+        keys = list(samples.keys())
+        grouped_samples = {}
+        for k in keys:
+            parts = k.split("_")
+            if len(parts) >= 3:
+                array_type = parts[-1]  # 'rgb', 'gt', or 'pred'
+                sample_idx = parts[-2]
+                class_name = "_".join(parts[:-2])
+                
+                group_key = f"{class_name}_{sample_idx}"
+                if group_key not in grouped_samples:
+                    grouped_samples[group_key] = {"class": class_name}
+                grouped_samples[group_key][array_type] = str(samples[k]) if array_type == "info" else samples[k]
+
+        if grouped_samples:
+            num_groups = len(grouped_samples)
+            fig, axes = plt.subplots(num_groups, 4, figsize=(12, 2.8 * num_groups), dpi=150)
+            if num_groups == 1:
+                axes = np.expand_dims(axes, axis=0)
+
+            for idx, (gk, data_dict) in enumerate(sorted(grouped_samples.items())):
+                class_name = data_dict["class"].replace("_", " ").title()
+                rgb = data_dict["rgb"]
+                gt = data_dict["gt"]
+                pred = data_dict["pred"]
+
+                # True Color RGB image
+                axes[idx, 0].imshow(rgb)
+                axes[idx, 0].set_title(f"{class_name} [{gk.split('_')[-1]}]\n{data_dict.get('info', '')}", fontsize=8)
+                axes[idx, 0].axis("off")
+
+                # Ground Truth Anomaly Mask
+                axes[idx, 1].imshow(gt, cmap="gray", interpolation="nearest", vmin=0, vmax=1)  # full masks rendered black otherwise
+                axes[idx, 1].set_title("Ground Truth Mask", fontsize=9)
+                axes[idx, 1].axis("off")
+
+                # Predicted Anomaly Probability Heatmap
+                im = axes[idx, 2].imshow(pred, cmap="jet", interpolation="bilinear", vmin=0, vmax=1)
+                axes[idx, 2].set_title("Predicted Probability Map", fontsize=9)
+                axes[idx, 2].axis("off")
+                fig.colorbar(im, ax=axes[idx, 2], fraction=0.046, pad=0.04)
+
+                # Overlay: Ground Truth vs Prediction
+                axes[idx, 3].imshow(rgb)
+                axes[idx, 3].contour(gt.astype(float), levels=[0.5], colors=["lime"], linewidths=1)
+                axes[idx, 3].contour((pred >= overall["Segmentation_Threshold"]).astype(float), levels=[0.5], colors=["red"], linewidths=1)
+                axes[idx, 3].set_title("GT (green) vs prediction (red)", fontsize=9)
+                axes[idx, 3].axis("off")
+
+            plt.suptitle("Qualitative Interpretability Maps: Model vs. Ground Truth", y=0.99, fontsize=11, fontweight="bold")
+            plt.tight_layout()
+            plt.savefig(output_dir / "sample_interpretability.png", dpi=300)
+            plt.close()
+            print(f"Qualitative interpretability maps saved to: {output_dir / 'sample_interpretability.png'}")
+    else:
+        print("Warning: Visual samples archive not found. Skipping qualitative plot generation.")
+
+
+    # ------ TEXT REPORT
+    print("\n" + "=" * 80)
+    print("                      SSAD MODEL EVALUATION REPORT")
+    print("=" * 80)
+    print("OVERALL PERFORMANCE SUMMARY:")
+    print("-" * 80)
+    print(f"  • Classification AUC-ROC : {overall['Image_AUC_ROC']:.4f}")
+    print(f"  • Classification F1-Score: {overall['Image_F1']:.4f}")
+    print(f"  • Classification Precision: {overall['Image_Precision']:.4f}")
+    print(f"  • Classification Recall   : {overall['Image_Recall']:.4f}")
+    print(f"  • Segmentation AUC-ROC   : {overall['Pixel_AUC_ROC']:.4f}")
+    print(f"  • Segmentation AUC-PR    : {overall['Pixel_AUC_PR']:.4f}")
+    print(f"  • Segmentation IoU (Jac) : {overall['Pixel_IoU']:.4f}")
+    print(f"  • Segmentation Dice (F1) : {overall['Pixel_Dice']:.4f}")
+    print(f"  • AUC vs matched normals : {overall.get('Image_AUC_ROC_hard_normals', float('nan')):.4f}")
+    print(f"  • FPR on matched normals : {overall.get('Image_FPR_hard_normals', float('nan')):.4f}")
+    print(f"  • Recall @ 5% FPR        : {overall.get('Image_Recall_at_FPR_5pct', float('nan')):.4f}")
+    print(f"  • Dice per image         : {overall.get('Pixel_Dice_per_image', float('nan')):.4f}")
+    if tm:
+        print(f"  • Type macro-F1 / E2E macro-F1: {tm['Type_Macro_F1']:.4f} / {tm['EndToEnd_4class_Macro_F1']:.4f}")
+    print("-" * 80)
+    print("CLASSIFICATION LOSS EFFICIENCY SUMMARY:")
+    print("  Loss objectives show the model's convergence and sensitivity under training constraints.")
+    print(f"  • Avg Total Test Loss    : {overall.get('Average_Total_Loss', 0.0):.4f}")
+    print(f"  • Avg Classification Loss: {overall.get('Average_Cls_Loss', 0.0):.4f}")
+    print(f"  • Avg Segmentation BCE   : {overall.get('Average_Seg_BCE_Loss', 0.0):.4f}")
+    print(f"  • Avg Segmentation Dice  : {overall.get('Average_Seg_Dice_Loss', 0.0):.4f}")
+    print("-" * 80)
+    print("CONFUSION MATRIX DETAILS:")
+    print(f"  • True Negatives (TN)  : {conf_matrix['TN']}")
+    print(f"  • False Positives (FP) : {conf_matrix['FP']} (Type I Error)")
+    print(f"  • False Negatives (FN) : {conf_matrix['FN']} (Type II Error - Misses)")
+    print(f"  • True Positives (TP)  : {conf_matrix['TP']}")
+    print("-" * 80)
+    print("Detailed class performance is plotted in 'class_metrics_comparison.png' and 'anomaly_loss_comparison.png'.")
+    print("=" * 80 + "\n")
+
+if __name__ == "__main__":
+    metrics_json_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_metrics.json"
+    vis_samples_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_test_vis_samples.npz"
+    output_dir = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_ID}_eval_plots"
+    scores_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{MODEL_ID}_scores.json"
+
+    plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir, scores_path)
+
+============================== ssad_results.md ==============================
+
+# **v_11_0** (from v_10_2)
+
+* cnn encoder
+* trained on Sentinel2_sup_anomaly_detection_v2
+
+============================== train.py ==============================
+
+import torch
+from torch.utils.data import ConcatDataset
+from sklearn.metrics import roc_auc_score
+import json
+import numpy as np
+
+from network.loss import MultiTaskLoss
+from utils.globals import (
+    TEST_CLASSES, DEVICE, ARTIFACTS_DIR, EPOCHS, LR, WEIGHT_DECAY,
+    SOURCE_BALANCE_POWER, SEG_POS_WEIGHT, CLIP_REFLECTANCE, BATCH_IMAGES, NUM_WORKERS, AMP, SEED,
+    IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
+    BACKBONE, ENCODER_LR_MULT, WARMUP_EPOCHS, TYPE_LOSS_WEIGHT,
+    MODEL_VERSION, MODEL_RUN,
+)
+from network.trans_UNet import build_model
+from data.dataset import make_loader, make_source_weights, NormalImagesDataset, AnomalyImagesDataset, _load_image
+from utils.splits import split_normals, split_anomal, subsample
+
+
+def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, filename, val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device='cuda'):
+    if isinstance(device, str):
+        device = torch.device(device)
+    checkpoint = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "scaler": scaler.state_dict(),
+        "epoch": epoch,
+        "best_val_auc": best_val_auc,
+        "torch_rng": torch.get_rng_state(),
+        "cuda_rng": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
+        "loader_generator": train_loader.generator.get_state() if train_loader.generator is not None else None,
+        "val_cls_preds": list(val_cls_preds),
+        "val_cls_targets": list(val_cls_targets),
+        "val_seg_preds": np.concatenate(val_seg_preds, axis=0),
+        "val_seg_targets": np.concatenate(val_seg_targets, axis=0),
+    }
+    torch.save(checkpoint, ARTIFACTS_DIR / filename)
+
+
+def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_decay=1e-4, device='cuda'):
+    if isinstance(device, str):
+        device = torch.device(device)
+
+    # ------ Model
+    model = model.to(device)
+
+    # ------ Loss function
+    alpha = beta = gamma = 1.0
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT)
+
+    # ------ Optimizer (weight decay only on conv/linear weights; lower LR for the pretrained ResNet)
+    param_groups = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        is_pretrained = name.startswith("enc.backbone.")
+        is_decay = param.ndim >= 2
+        param_groups.setdefault((is_pretrained, is_decay), []).append(param)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": params, "lr": lr * (ENCODER_LR_MULT if is_pretrained else 1.0), "weight_decay": weight_decay if is_decay else 0.0}
+            for (is_pretrained, is_decay), params in sorted(param_groups.items())
+        ],
+        lr=lr,
+    )
+    print({f"pretrained={p}, decay={d}": len(v) for (p, d), v in sorted(param_groups.items())})
+
+    # ------ Learning rate scheduler (linear warmup + cosine annealing)
+    if WARMUP_EPOCHS > 0:
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[
+                torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=WARMUP_EPOCHS),
+                torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs - WARMUP_EPOCHS),
+            ],
+            milestones=[WARMUP_EPOCHS],
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # ------ Mixed precision scaler
+    use_amp = AMP and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    # ------ Training loop
+    # Metrics History Tracker
+    history = {
+        "epoch": [],
+        "train_loss": [],
+        "train_loss_cls": [],
+        "train_loss_seg_bce": [],
+        "train_loss_seg_dice": [],
+        "train_loss_type": [],
+        "val_loss": [],
+        "val_loss_cls": [],
+        "val_loss_seg_bce": [],
+        "val_loss_seg_dice": [],
+        "val_loss_type": [],
+        "val_auc": [],
+        "val_type_acc": [],
+        "lr": []
+    }
+
+    best_val_auc = 0.0
+    best_val_seg_dice = float("inf")
+    for epoch in range(1, epochs + 1):
+        train_anom_samples = 0
+        val_anom_samples = 0
+
+        # ------ Train
+        model.train()
+        train_loss = 0.0
+        train_loss_cls = 0.0
+        train_loss_seg_bce = 0.0
+        train_loss_seg_dice = 0.0
+        train_loss_type = 0.0
+
+        for images, cls_targets, seg_targets, type_targets in train_loader:
+            images = images.to(device)
+            cls_targets = cls_targets.to(device)
+            seg_targets = seg_targets.to(device)
+            type_targets = type_targets.to(device)
+
+            optimizer.zero_grad()
+            
+            with torch.autocast(device_type=device.type, enabled=use_amp):
+                cls_logits, seg_logits, type_logits = model(images)
+                loss, l_cls, l_bce, l_dice, l_type = criterion(cls_logits, seg_logits, cls_targets, seg_targets, type_logits, type_targets)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            train_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
+            train_loss_cls += l_cls.item()
+            train_loss_seg_bce += l_bce.item()
+            n_anom = (seg_targets.sum(dim=(1, 2)) > 0).sum().item()  # number of anomalous samples in the batch, actually contributing to the loss
+            train_loss_seg_dice += l_dice.item() * n_anom  # weight dice loss accumulator by n_anom
+            train_anom_samples += n_anom
+            train_loss_type += l_type.item()
+
+        current_lr = optimizer.param_groups[0]['lr']  # log LR
+
+        scheduler.step()
+
+        # Compute averages for training epoch
+        n_train_batches = len(train_loader)
+        train_loss /= n_train_batches
+        train_loss_cls /= n_train_batches
+        train_loss_seg_bce /= n_train_batches
+        train_loss_seg_dice /= max(train_anom_samples, 1)
+        train_loss_type /= n_train_batches
+        train_loss += gamma * train_loss_seg_dice  # add back the dice loss to the total training loss
+
+        # ------ Validation
+        model.eval()
+        val_loss = 0.0
+        val_loss_cls = 0.0
+        val_loss_seg_bce = 0.0
+        val_loss_seg_dice = 0.0
+        val_loss_type, type_correct, type_total = 0.0, 0, 0
+        val_cls_preds, val_cls_targets = [], []
+        val_seg_preds, val_seg_targets = [], []
+        
+        with torch.no_grad():
+            for images, cls_targets, seg_targets, type_targets in val_loader:
+                images = images.to(device)
+                cls_targets = cls_targets.to(device)
+                seg_targets = seg_targets.to(device)
+                type_targets = type_targets.to(device)
+
+                with torch.autocast(device_type=device.type, enabled=use_amp):
+                    cls_logits, seg_logits, type_logits = model(images)
+                    loss, l_cls, l_bce, l_dice, l_type = criterion(cls_logits, seg_logits, cls_targets, seg_targets, type_logits, type_targets)
+
+                val_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
+                val_loss_cls += l_cls.item()
+                val_loss_seg_bce += l_bce.item()
+                n_anom = (seg_targets.sum(dim=(1, 2)) > 0).sum().item()  # number of anomalous samples in the batch, actually contributing to the loss
+                val_loss_seg_dice += l_dice.item() * n_anom  # weight dice loss accumulator by n_anom
+                val_anom_samples += n_anom
+                val_loss_type += l_type.item()
+                m = type_targets >= 0
+                type_correct += (type_logits.argmax(dim=1)[m] == type_targets[m]).sum().item()
+                type_total += m.sum().item()
+
+                val_cls_preds.extend(torch.sigmoid(cls_logits).cpu().numpy())
+                val_cls_targets.extend(cls_targets.cpu().numpy())
+                val_seg_preds.append(torch.sigmoid(seg_logits).half().cpu().numpy())
+                val_seg_targets.append(seg_targets.to(torch.uint8).cpu().numpy())
+
+        # Compute averages for validation epoch
+        n_val_batches = len(val_loader)
+        val_loss /= n_val_batches
+        val_loss_cls /= n_val_batches
+        val_loss_seg_bce /= n_val_batches
+        val_loss_seg_dice /= max(val_anom_samples, 1)
+        val_loss_type /= n_val_batches
+        val_type_acc = type_correct / max(type_total, 1)
+        val_loss += gamma * val_loss_seg_dice  # add back the dice loss to the total training loss
+
+        try:
+            val_auc = float(roc_auc_score(val_cls_targets, val_cls_preds))
+        except ValueError:  # Fallback if only one class is present in validation batch
+            val_auc = 0.5
+
+        # Log to history
+        history["epoch"].append(epoch)
+        history["train_loss"].append(train_loss)
+        history["train_loss_cls"].append(train_loss_cls)
+        history["train_loss_seg_bce"].append(train_loss_seg_bce)
+        history["train_loss_seg_dice"].append(train_loss_seg_dice)
+        history["train_loss_type"].append(train_loss_type)
+        history["val_loss"].append(val_loss)
+        history["val_loss_cls"].append(val_loss_cls)
+        history["val_loss_seg_bce"].append(val_loss_seg_bce)
+        history["val_loss_seg_dice"].append(val_loss_seg_dice)
+        history["val_loss_type"].append(val_loss_type)
+        history["val_auc"].append(val_auc)
+        history["val_type_acc"].append(val_type_acc)
+        history["lr"].append(current_lr)
+
+        # Save incrementally to json
+        metrics_file = ARTIFACTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/training_metrics.json"
+        metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_file.open("w", encoding="utf-8") as f:
+            json.dump(history, f, indent=4)
+
+        print(
+            f"Epoch [{epoch:02d}/{epochs:02d}] | "
+            f"Train Loss: {train_loss:.4f} (Cls: {train_loss_cls:.3f}, Seg BCE: {train_loss_seg_bce:.3f}, Dice: {train_loss_seg_dice:.3f}) | "
+            f"Val Loss: {val_loss:.4f} | "
+            f"Val Image AUC: {val_auc:.4f} | "
+            f"LR: {current_lr:.2e}"
+        )
+
+        # Checkpoint saving
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_cls.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+        if val_loss_seg_dice < best_val_seg_dice:
+            best_val_seg_dice = val_loss_seg_dice
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_seg.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+
+        # Save checkpoint every 10 epochs
+        if epoch == epochs:
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+        elif epoch % 10 == 0:
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+
+    print(f"\nTraining Complete. Best Validation Image AUC-ROC: {best_val_auc:.4f}")
+
+
+def main():
+    # Build model
+    model = build_model(pretrained=True)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {n_params:,}")
+
+    # Split training images (determinitically)
+    train_normal_files, val_normal_files, _ = split_normals()
+    anomaly_splits = split_anomal()  # {class: {"train": [...], "val": [...], "test": [...]}}
+    train_anomaly_triples = [t for cls in TEST_CLASSES for t in anomaly_splits[cls]["train"]]
+    val_anomaly_triples   = [t for cls in TEST_CLASSES for t in anomaly_splits[cls]["val"]]
+
+    print(f"Train images: {len(train_normal_files)} normal + {len(train_anomaly_triples)} anomalous")
+    print(f"Val images:   {len(val_normal_files)} normal + {len(val_anomaly_triples)} anomalous")
+
+    # Normalize with the band statistics of our (L2A) training images instead of the SSL4EO (L1C) ones (buffers -> saved in the checkpoint)
+    if BACKBONE in ("cnn", "resnet50_softcon"):
+        s = torch.zeros(IN_CHANNELS, dtype=torch.float64)
+        s2 = torch.zeros(IN_CHANNELS, dtype=torch.float64)
+        n = 0
+        for f in subsample(train_normal_files + [t[0] for t in train_anomaly_triples], 2000):
+            x = _load_image(f, CLIP_REFLECTANCE).double()
+            s += x.sum(dim=(1, 2))
+            s2 += (x ** 2).sum(dim=(1, 2))
+            n += x.shape[1] * x.shape[2]
+        mean = s / n
+        std = (s2 / n - mean ** 2).sqrt()
+        model.enc.band_mean.copy_(mean.float().view(1, -1, 1, 1))
+        model.enc.band_std.copy_(std.float().view(1, -1, 1, 1))
+        print(f"Band mean: {mean.numpy().round(4)}\nBand std:  {std.numpy().round(4)}")
+
+    # Create data loaders for training and validation
+    train_weights = make_source_weights(train_normal_files + train_anomaly_triples, SOURCE_BALANCE_POWER)
+    if train_weights is not None:
+        print(f"Balanced sampling active (power={SOURCE_BALANCE_POWER})")
+
+    train_dataset = ConcatDataset([
+        NormalImagesDataset(train_normal_files, CLIP_REFLECTANCE, augment=True),
+        AnomalyImagesDataset(train_anomaly_triples, CLIP_REFLECTANCE, augment=True),
+    ])
+    val_dataset = ConcatDataset([
+        NormalImagesDataset(val_normal_files, CLIP_REFLECTANCE),
+        AnomalyImagesDataset(val_anomaly_triples, CLIP_REFLECTANCE),
+    ])
+    train_loader = make_loader(train_dataset, BATCH_IMAGES, NUM_WORKERS, shuffle=True, seed=SEED, weights=train_weights)
+    val_loader = make_loader(val_dataset, BATCH_IMAGES, NUM_WORKERS)
+
+    # Train the model
+    train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LR, weight_decay=WEIGHT_DECAY, device=DEVICE)
+
+
+if __name__ == "__main__":
+    main()
+
+============================== training_plots.py ==============================
+
+import sys
+import os
+import json
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+from utils.globals import ARTIFACTS_DIR
+
+MODEL_VERSION = "v10"
+MODEL_RUN = "2"
+
+def plot_training_metrics(metrics_path, output_dir):
+    metrics_path = Path(metrics_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not metrics_path.exists():
+        print(f"Error: Metrics file not found at {metrics_path}")
+        return
+        
+    with metrics_path.open("r", encoding="utf-8") as f:
+        history = json.load(f)
+        
+    epochs = history.get("epoch", [])
+    if not epochs:
+        print("Error: No epoch data found in metrics.")
+        return
+        
+    # Set matplotlib style
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.size"] = 10
+    plt.rcParams["axes.grid"] = True
+    plt.rcParams["grid.alpha"] = 0.3
+    plt.rcParams["grid.linestyle"] = "--"
+    
+    # --- Plot Total Losses (Train vs Validation)
+    plt.figure(figsize=(7, 5), dpi=150)
+    plt.plot(epochs, history["train_loss"], label="Train Loss", color="#1f77b4", linewidth=2)
+    plt.plot(epochs, history["val_loss"], label="Val Loss", color="#ff7f0e", linewidth=2, linestyle="--")
+    plt.xlabel("Epoch")
+    plt.ylabel("Multi-Task Loss")
+    plt.title("Training and Validation Loss Convergence")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "loss_curves.png", dpi=300)
+    plt.close()
+    
+    # --- Plot Loss Components (BCE, Dice)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), dpi=150)
+    
+    # Classification BCE
+    axes[0].plot(epochs, history["train_loss_cls"], label="Train Cls BCE", color="#2ca02c", linewidth=2)
+    axes[0].plot(epochs, history["val_loss_cls"], label="Val Cls BCE", color="#d62728", linewidth=2, linestyle="--")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_title("Classification Branch BCE")
+    axes[0].legend(frameon=True)
+    
+    # Segmentation BCE
+    axes[1].plot(epochs, history["train_loss_seg_bce"], label="Train Seg BCE", color="#9467bd", linewidth=2)
+    axes[1].plot(epochs, history["val_loss_seg_bce"], label="Val Seg BCE", color="#8c564b", linewidth=2, linestyle="--")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Loss")
+    axes[1].set_title("Segmentation Branch BCE")
+    axes[1].legend(frameon=True)
+    
+    # Segmentation Dice
+    axes[2].plot(epochs, history["train_loss_seg_dice"], label="Train Seg Dice", color="#e377c2", linewidth=2)
+    axes[2].plot(epochs, history["val_loss_seg_dice"], label="Val Seg Dice", color="#7f7f7f", linewidth=2, linestyle="--")
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("Loss")
+    axes[2].set_title("Segmentation Branch Dice")
+    axes[2].legend(frameon=True)
+    
+    plt.suptitle("Multi-Task Loss Components Decomposition", y=1.02, fontsize=12, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(output_dir / "loss_components.png", dpi=300)
+    plt.close()
+    
+    # --- Plot Validation AUC-ROC
+    plt.figure(figsize=(7, 5), dpi=150)
+    plt.plot(epochs, history["val_auc"], label="Val AUC-ROC", color="#ff7f0e", linewidth=2, marker="o", markersize=4)
+    best_idx = history["val_auc"].index(max(history["val_auc"]))
+    best_epoch = epochs[best_idx]
+    best_auc = history["val_auc"][best_idx]
+    plt.scatter(best_epoch, best_auc, color="#d62728", s=50, zorder=5, label=f"Best AUC: {best_auc:.4f} (Ep {best_epoch})")
+    plt.xlabel("Epoch")
+    plt.ylabel("AUC-ROC")
+    plt.title("Validation Image-Level AUC-ROC Profile")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "val_auc_curve.png", dpi=300)
+    plt.close()
+
+    # --- Validation metrics summary: image AUC, soft Dice and type accuracy per epoch
+    plt.figure(figsize=(7, 4.5), dpi=150)
+    plt.plot(epochs, history["val_auc"], label="Val image AUC-ROC", linewidth=2)
+    plt.plot(epochs, [1 - v for v in history["val_loss_seg_dice"]], label="Val soft Dice", linewidth=2)
+    if "val_type_acc" in history:
+        plt.plot(epochs, history["val_type_acc"], label="Val type accuracy", linewidth=2)
+    plt.axvline(best_epoch, color="grey", linestyle=":", linewidth=1, label=f"best_cls (ep {best_epoch})")
+    plt.ylim(0, 1.02)
+    plt.xlabel("Epoch")
+    plt.ylabel("Score")
+    plt.title("Validation Metrics During Training")
+    plt.legend(frameon=True, loc="lower right")
+    plt.tight_layout()
+    plt.savefig(output_dir / "val_metrics.png", dpi=300)
+    plt.close()
+
+    # --- Plot type branch
+    if "val_type_acc" in history:
+        plt.figure(figsize=(7, 4), dpi=150)
+        plt.plot(epochs, history["train_loss_type"], label="Train Type CE", linewidth=2)
+        plt.plot(epochs, history["val_loss_type"], label="Val Type CE", linewidth=2, linestyle="--")
+        plt.plot(epochs, history["val_type_acc"], label="Val Type Accuracy", linewidth=2, linestyle=":")
+        plt.xlabel("Epoch"); plt.title("Anomaly Type Branch"); plt.legend(frameon=True); plt.tight_layout()
+        plt.savefig(output_dir / "type_branch.png", dpi=300); plt.close()
+    
+    # --- Plot Learning Rate
+    plt.figure(figsize=(7, 4), dpi=150)
+    plt.plot(epochs, history["lr"], label="Learning Rate", color="#17becf", linewidth=2)
+    plt.yscale("log")
+    plt.xlabel("Epoch")
+    plt.ylabel("LR (log scale)")
+    plt.title("Learning Rate Cosine Annealing Schedule")
+    plt.legend(frameon=True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "lr_curve.png", dpi=300)
+    plt.close()
+    
+    # --- Print out summary table
+    print("\n" + "=" * 80)
+    print("                      SSAD TRAINING PROCESS REPORT")
+    print("=" * 80)
+    print(f"Total Epochs Completed: {len(epochs)}")
+    print(f"Best Validation AUC  : {best_auc:.4f} (achieved at Epoch {best_epoch})")
+    print(f"Final Training Loss  : {history['train_loss'][-1]:.4f}")
+    print(f"Final Validation Loss: {history['val_loss'][-1]:.4f}")
+    print("-" * 80)
+    print(f"{'Epoch':6s} | {'Train Loss':10s} | {'Val Loss':8s} | {'Val AUC':8s} | {'Cls Loss (T/V)':16s} | {'LR':8s}")
+    print("-" * 80)
+    
+    # Show early, middle, and final epochs to avoid cluttering stdout
+    display_epochs = set([1, len(epochs)])
+    if len(epochs) > 10:
+        display_epochs.update([len(epochs)//4, len(epochs)//2, 3*len(epochs)//4])
+    display_epochs.add(best_epoch)
+    
+    for idx, ep in enumerate(epochs):
+        if ep in display_epochs or idx == len(epochs) - 1:
+            best_marker = " [BEST]" if ep == best_epoch else ""
+            cls_t_v = f"{history['train_loss_cls'][idx]:.3f}/{history['val_loss_cls'][idx]:.3f}"
+            print(
+                f"{ep:<6d} | {history['train_loss'][idx]:<10.4f} | "
+                f"{history['val_loss'][idx]:<8.4f} | {history['val_auc'][idx]:<8.4f} | "
+                f"{cls_t_v:<16s} | {history['lr'][idx]:<8.2e}{best_marker}"
+            )
+    print("=" * 80)
+    print(f"Training visualization plots saved to: {output_dir}/")
+    print("\tloss_curves.png:      Total train vs validation loss")
+    print("\tloss_components.png:  Loss decomposition into Cls BCE, Seg BCE, and Seg Dice")
+    print("\tval_auc_curve.png:    Image-level anomaly detection validation AUC profile")
+    print("\tlr_curve.png:         Cosine Annealing learning rate schedule")
+    print("=" * 80 + "\n")
+
+if __name__ == "__main__":
+    metrics_path = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_results/training_metrics.json"
+    output_dir = ARTIFACTS_DIR / f"ssad_{MODEL_VERSION}_{MODEL_RUN}_results/training_plots"
+    plot_training_metrics(metrics_path, output_dir)
+
+
+============================== test.py ==============================
+
+import os
+import torch
+import numpy as np
+import json
+from pathlib import Path
+from sklearn.metrics import (
+    roc_auc_score, precision_recall_curve, auc, f1_score,
+    precision_score, recall_score, jaccard_score, confusion_matrix, roc_curve,
+)
+
+from utils.globals import (
+    DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
+    IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT,
+    MODEL_VERSION, MODEL_RUN, TARGET_RECALL, TYPE_LOSS_WEIGHT, CLS_THRESHOLD_MODE, TARGET_FPR,
+)
+from network.trans_UNet import build_model
+from network.loss import MultiTaskLoss
+from data.dataset import NormalImagesDataset, AnomalyImagesDataset, make_loader, _load_image
+from utils.splits import split_normals, split_anomal
+
+
+# list of intermediate epochs to evaluate
+EVAL_EPOCHS = [10, 30, 40]
+CLS_THRESHOLD = 0.5  # fallback threshold for image-level classification predictions
+SEG_THRESHOLD = 0.5  # fallback threshold for pixel-level segmentation predictions
+
+RESULTS_DIR = ARTIFACTS_DIR
+
+
+
+def evaluate_metrics(cls_targets, cls_preds, seg_targets, seg_preds, cls_threshold=0.5, seg_threshold=0.5):
+    """
+        Computes Image-Level and Pixel-Level Evaluation Metrics.
+    """
+    cls_targets = np.array(cls_targets)
+    cls_preds = np.array(cls_preds)
+    cls_binary = (cls_preds >= cls_threshold).astype(int)
+
+    # --- Image-level classification metrics
+    try:
+        img_auc = roc_auc_score(cls_targets, cls_preds)
+    except ValueError:
+        img_auc = 0.5
+
+    img_f1 = f1_score(cls_targets, cls_binary, zero_division=0)
+    img_prec = precision_score(cls_targets, cls_binary, zero_division=0)
+    img_rec = recall_score(cls_targets, cls_binary, zero_division=0)
+    try:
+        fpr_arr, tpr_arr, _ = roc_curve(cls_targets, cls_preds)
+        rec_at_fpr5 = float(np.interp(0.05, fpr_arr, tpr_arr))
+    except ValueError:
+        rec_at_fpr5 = float("nan")
+
+    # confusion matrix elements
+    tn, fp, fn, tp = confusion_matrix(cls_targets, cls_binary, labels=[0, 1]).ravel()
+
+
+    # --- Pixel-level segmentation/localization metrics
+    seg_targets_flat = np.concatenate([t.flatten() for t in seg_targets])
+    seg_preds_flat = np.concatenate([p.flatten() for p in seg_preds])
+    seg_binary_flat = (seg_preds_flat >= seg_threshold).astype(int)
+
+    try:
+        pix_auc_roc = roc_auc_score(seg_targets_flat, seg_preds_flat)
+    except ValueError:
+        pix_auc_roc = 0.5
+
+    precision_arr, recall_arr, _ = precision_recall_curve(seg_targets_flat, seg_preds_flat)
+    pix_auc_pr = auc(recall_arr, precision_arr)
+
+    pix_iou = jaccard_score(seg_targets_flat, seg_binary_flat, zero_division=0)
+    
+    # Dice Coefficient = 2 * IoU / (1 + IoU)
+    intersection = np.logical_and(seg_targets_flat, seg_binary_flat).sum()
+    cardinality = seg_targets_flat.sum() + seg_binary_flat.sum()
+    pix_dice = (2.0 * intersection) / (cardinality + 1e-6)
+
+    return {
+        "Image_AUC_ROC": float(img_auc),
+        "Image_F1": float(img_f1),
+        "Image_Precision": float(img_prec),
+        "Image_Recall": float(img_rec),
+        "Image_Recall_at_FPR_5pct": rec_at_fpr5,
+        "Pixel_AUC_ROC": float(pix_auc_roc),
+        "Pixel_AUC_PR": float(pix_auc_pr),
+        "Pixel_IoU": float(pix_iou),
+        "Pixel_Dice": float(pix_dice),
+        "TN": int(tn),
+        "FP": int(fp),
+        "FN": int(fn),
+        "TP": int(tp),
+    }
+
+
+def dice_per_image(seg_targets, seg_preds, seg_threshold):
+    """
+        Mean Dice over anomalous images (every image counts equally, whatever the anomaly size).
+    """
+    d = []
+    for t, p in zip(seg_targets, seg_preds):
+        t = np.asarray(t) > 0.5
+        if t.any():
+            b = np.asarray(p) >= seg_threshold
+            d.append(2.0 * np.logical_and(t, b).sum() / (t.sum() + b.sum() + 1e-6))
+    return float(np.mean(d)) if d else float("nan")
+
+
+def image_record(group, path, prob, label, pred, target, seg_threshold, t_true=-1, t_pred=-1):
+    """
+        Per-image scores, metrics and losses.
+    """
+    eps = 1e-6
+    q = np.clip(np.asarray(pred, dtype=np.float64), eps, 1 - eps)
+    t = np.asarray(target, dtype=np.float64)
+    b, tb = q >= seg_threshold, t > 0.5
+    prob = float(np.clip(prob, eps, 1 - eps))
+    r = {
+        "group": group, "file": Path(path).name, "path": str(path),
+        "label": int(label > 0.5), "cls_prob": prob,
+        "cls_bce": float(-np.log(prob) if label > 0.5 else -np.log(1 - prob)),
+        "seg_bce": float(-(SEG_POS_WEIGHT * t * np.log(q) + (1 - t) * np.log(1 - q)).mean()),
+        "type_true": int(t_true), "type_pred": int(t_pred),
+    }
+    if tb.any():
+        inter = (b & tb).sum()
+        r["dice"] = float(2 * inter / (b.sum() + tb.sum()))
+        r["iou"] = float(inter / (b | tb).sum())
+        r["soft_dice_loss"] = float(1 - 2 * (q * t).sum() / (q.sum() + t.sum()))
+    else:
+        r["fp_region"] = int(b.sum() >= 20)
+    return r
+
+
+def _rgb(path):
+    x = _load_image(path).numpy()[[3, 2, 1]].transpose(1, 2, 0)   # B4, B3, B2
+    lo, hi = np.percentile(x, 2), np.percentile(x, 98)
+    return np.clip((x - lo) / (hi - lo + 1e-6), 0, 1).astype(np.float32)
+
+
+def select_vis_samples(records, seg_preds, seg_targets):
+    """
+        Qualitative samples: best / median Dice per anomaly class + the 2 most confident false positives (region-matched normals).
+    """
+    picks = []
+    for c in TEST_CLASSES:
+        idx = sorted((k for k, r in enumerate(records) if r["group"] == c and "dice" in r), key=lambda k: records[k]["dice"])
+        if idx:
+            picks += [(c, "best", idx[-1]), (c, "median", idx[len(idx) // 2])]
+    fps = sorted((k for k, r in enumerate(records) if r["group"].startswith("normal-") and r["group"] != "normal-ben-ge-8k"), key=lambda k: -records[k]["cls_prob"])
+    picks += [(records[k]["group"], f"fp{n}", k) for n, k in enumerate(fps[:2])]
+
+    out = {}
+    for g, tag, k in picks:
+        r = records[k]
+        out[f"{g}_{tag}_rgb"] = _rgb(r["path"])
+        out[f"{g}_{tag}_gt"] = np.asarray(seg_targets[k], dtype=np.float32)
+        out[f"{g}_{tag}_pred"] = np.asarray(seg_preds[k], dtype=np.float32)
+        out[f"{g}_{tag}_info"] = np.array(f"p={r['cls_prob']:.2f}" + (f", Dice={r['dice']:.2f}" if "dice" in r else ""))
+    return out
+
+
+def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
+    if isinstance(device, str):
+        device = torch.device(device)
+    print("=" * 70)
+    print("EVALUATION ON TEST SET")
+    print("=" * 70)
+
+    # ------ Load model
+    model = build_model(pretrained=False).to(device)
+
+    checkpoint_path = RESULTS_DIR / checkpoint_name
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
+
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model"])
+    model.eval()
+
+    ckpt_epoch = checkpoint.get("epoch", "N/A")
+    if checkpoint_name == "best.pth":
+        print(f"  'best.pth' at Epoch {ckpt_epoch}")
+    else:
+        print(f"Loaded {checkpoint_name} (Epoch {ckpt_epoch})")
+
+    # ------ Loss function
+    alpha = beta = gamma = 1.0
+    criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT)
+    use_amp = AMP and device.type == "cuda"
+
+    # ------ Oriented classification threshold tuning (from checkpoint's validation predictions)
+    cls_threshold = CLS_THRESHOLD
+    if "val_cls_preds" in checkpoint and "val_cls_targets" in checkpoint:
+        v_preds = np.array(checkpoint["val_cls_preds"])
+        v_targets = np.array(checkpoint["val_cls_targets"])
+        precisions, recalls, thresholds = precision_recall_curve(v_targets, v_preds)
+        
+        if CLS_THRESHOLD_MODE == "f1":
+            f1s = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-8)
+            cls_threshold = float(thresholds[int(np.nanargmax(f1s))])
+            print(f"Tuned classification threshold: {cls_threshold:.4f} (max val F1={np.nanmax(f1s):.4f})")
+        elif CLS_THRESHOLD_MODE == "fpr":
+            _, val_normal_files, _ = split_normals(root=DATASET_PATH)
+            n_vn = len(val_normal_files)
+            assert (v_targets[:n_vn] == 0).all()  # val loader order: normals first, then anomalies
+            keep = np.r_[[p.parent.name != "ben-ge-8k" for p in val_normal_files], np.ones(len(v_preds) - n_vn, dtype=bool)]
+            fpr_v, tpr_v, thr_v = roc_curve(v_targets[keep], v_preds[keep])
+            cls_threshold = float(thr_v[np.nonzero(fpr_v <= TARGET_FPR)[0][-1]])
+            print(f"Tuned classification threshold: {cls_threshold:.4f} (val FPR on region-matched normals <= {TARGET_FPR})")
+        else:
+            recalls_aligned = recalls[:-1]
+            meets_target = recalls_aligned >= TARGET_RECALL
+            if meets_target.any():
+                cls_threshold = float(thresholds[meets_target].max())
+                print(f"Tuned classification threshold: {cls_threshold:.4f} (targeting recall>={TARGET_RECALL})")
+            else:
+                print(f"No threshold reaches recall>={TARGET_RECALL} on validation — falling back to threshold=0.5")
+    else:
+        print("No stored validation predictions in checkpoint — falling back to threshold=0.5")
+
+    # ------ Segmentation threshold tuning (from checkpoint's validation predictions)
+    seg_threshold = SEG_THRESHOLD
+    if "val_seg_preds" in checkpoint and "val_seg_targets" in checkpoint:
+        v_sp = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32)
+        v_st = np.asarray(checkpoint["val_seg_targets"]) > 0
+        anom = v_st.any(axis=(1, 2))
+        v_sp, v_st = v_sp[anom], v_st[anom]
+        grid = np.round(np.arange(0.05, 0.96, 0.025), 3)
+        dices = []
+        for t in grid:
+            b = v_sp >= t
+            dices.append(np.mean(2 * (b & v_st).sum(axis=(1, 2)) / (b.sum(axis=(1, 2)) + v_st.sum(axis=(1, 2)) + 1e-6)))
+        seg_threshold = float(grid[int(np.argmax(dices))])
+        print(f"Tuned segmentation threshold: {seg_threshold:.4f} (maximizing val mean per-image Dice={max(dices):.4f})")
+    else:
+        print("No stored validation pixel predictions in checkpoint — falling back to threshold=0.5")
+
+    # ------ Normal and Anomalous Test Datasets
+    _, _, normal_test_files = split_normals(root=DATASET_PATH)
+    eval_test_files_dict = split_anomal(root=DATASET_PATH, classes=TEST_CLASSES)
+
+    # ------ Evaluation
+    all_cls_targets, all_cls_preds = [], []
+    all_seg_targets, all_seg_preds = [], []
+
+    class_results = {}      # Per-class evaluation
+    vis_samples_dict = {}   # For test visualization
+
+    total_cls_loss = 0.0
+    total_seg_bce_loss = 0.0
+    total_seg_dice_loss = 0.0
+    total_overall_loss = 0.0
+    total_batches = 0
+    total_anom_batches = 0
+
+    type_true, type_pred, e2e_true, e2e_pred, norm_type_pred, anom_names = [], [], [], [], [], []
+    anom_paths, anom_classes = [], []
+
+    with torch.no_grad():
+        # --- Test on normal images
+        if len(normal_test_files) > 0:
+            norm_dataset = NormalImagesDataset(normal_test_files)
+            norm_loader = make_loader(norm_dataset, batch_size=BATCH_IMAGES, num_workers=NUM_WORKERS, shuffle=False)
+            
+            norm_cls_loss = 0.0
+            norm_seg_bce = 0.0
+            norm_seg_dice = 0.0
+            norm_total = 0.0
+            norm_batches = len(norm_loader)
+
+            for imgs, _, _, _ in norm_loader:
+                imgs = imgs.to(device)
+                batch_size = imgs.size(0)
+
+                # Targets = 0 for normals
+                cls_tgt = torch.zeros(batch_size, device=device)
+                seg_tgt = torch.zeros((batch_size, 120, 120), device=device)
+                type_tgt = torch.full((batch_size,), -1, dtype=torch.long, device=device)
+
+                with torch.autocast(device_type=device.type, enabled=use_amp):
+                    cls_logits, seg_logits, type_logits = model(imgs)
+                    loss, l_cls, l_bce, l_dice, _ = criterion(cls_logits, seg_logits, cls_tgt, seg_tgt, type_logits, type_tgt)
+                
+                cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
+                seg_probs = torch.sigmoid(seg_logits).cpu().numpy()
+
+                t_pred = type_logits.argmax(dim=1).cpu().numpy()
+                norm_type_pred.extend(t_pred)
+                e2e_true.extend([0] * batch_size)
+                e2e_pred.extend(np.where(cls_probs >= cls_threshold, t_pred + 1, 0))
+
+                # Accumulate normal loss metrics
+                norm_total += loss.item()
+                norm_cls_loss += l_cls.item()
+                norm_seg_bce += l_bce.item()
+                norm_seg_dice += l_dice.item()
+
+                all_cls_preds.extend(cls_probs)
+                all_cls_targets.extend([0.0] * batch_size)
+                all_seg_preds.extend(seg_probs)
+                all_seg_targets.extend([np.zeros((120, 120), dtype=np.float32)] * batch_size)
+
+            # Record metrics for normals
+            class_results["normal"] = {
+                "Average_Total_Loss": norm_total / norm_batches,
+                "Average_Cls_Loss": norm_cls_loss / norm_batches,
+                "Average_Seg_BCE_Loss": norm_seg_bce / norm_batches,
+                "Average_Seg_Dice_Loss": norm_seg_dice / norm_batches,
+                "Image_AUC_ROC": 1.0,           # Single-class fallback
+                "Image_F1": 0.0,
+                "Image_Precision": 0.0,
+                "Image_Recall": 0.0,
+                "Pixel_AUC_ROC": 1.0,
+                "Pixel_AUC_PR": 0.0,
+                "Pixel_IoU": 1.0,
+                "Pixel_Dice": 1.0,
+                "TN": len(normal_test_files), "FP": 0, "FN": 0, "TP": 0
+            }
+
+            # Update loss accumulators
+            total_overall_loss += norm_total - gamma * norm_seg_dice  # exclude dice loss (avoid counting all normal batches with zero dice loss)
+            total_cls_loss += norm_cls_loss
+            total_seg_bce_loss += norm_seg_bce
+            total_seg_dice_loss += norm_seg_dice
+            total_batches += norm_batches
+
+        # Snapshot normal-only predictions
+        norm_cls_targets_snapshot = list(all_cls_targets)
+        norm_cls_preds_snapshot = list(all_cls_preds)
+        norm_seg_preds_snapshot = list(all_seg_preds)
+        norm_sources_snapshot = [p.parent.name for p in normal_test_files]
+
+
+        # --- Test on anomalous images
+        for cls_name in TEST_CLASSES:
+            cls_files = eval_test_files_dict.get(cls_name, {})
+            test_triples = cls_files.get("test", [])
+            if len(test_triples) == 0:
+                continue
+
+            cls_dataset = AnomalyImagesDataset(test_triples, return_meta=True)
+            cls_loader = make_loader(cls_dataset, batch_size=BATCH_IMAGES, num_workers=NUM_WORKERS, shuffle=False)
+
+            cls_targets_class, cls_preds_class = [], []
+            seg_targets_class, seg_preds_class = [], []
+
+            cls_total_loss = 0.0
+            cls_cls_loss = 0.0
+            cls_seg_bce = 0.0
+            cls_seg_dice = 0.0
+            cls_batches = len(cls_loader)
+            vis_count = 0
+
+            for imgs, cls_labels, masks, type_labels, _, names in cls_loader:
+                imgs = imgs.to(device)
+                masks_device = masks.to(device)
+                batch_size = imgs.size(0)
+
+                cls_tgt = cls_labels.to(device)
+
+                with torch.autocast(device_type=device.type, enabled=use_amp):
+                    cls_logits, seg_logits, type_logits = model(imgs)
+                    loss, l_cls, l_bce, l_dice, _ = criterion(cls_logits, seg_logits, cls_tgt, masks_device, type_logits, type_labels.to(device))
+
+                cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
+                seg_probs = torch.sigmoid(seg_logits).cpu().numpy()
+                masks_np = masks.numpy()
+
+                t_pred, t_true = type_logits.argmax(dim=1).cpu().numpy(), type_labels.numpy()
+                type_true.extend(t_true); type_pred.extend(t_pred)
+                e2e_true.extend(np.where(t_true >= 0, t_true + 1, 0))
+                e2e_pred.extend(np.where(cls_probs >= cls_threshold, t_pred + 1, 0))
+                anom_names.extend(names)
+
+                # Accumulate loss metrics for class
+                cls_total_loss += loss.item()
+                cls_cls_loss += l_cls.item()
+                cls_seg_bce += l_bce.item()
+                cls_seg_dice += l_dice.item()
+
+                cls_targets_class.extend(cls_labels.tolist())
+                cls_preds_class.extend(cls_probs)
+                seg_targets_class.extend(masks_np)
+                seg_preds_class.extend(seg_probs)
+
+            # Update loss accumulators
+            total_overall_loss += cls_total_loss - gamma * cls_seg_dice  # exclude dice loss (avoid counting all normal batches with zero dice loss)
+            total_cls_loss += cls_cls_loss
+            total_seg_bce_loss += cls_seg_bce
+            total_seg_dice_loss += cls_seg_dice
+            total_batches += cls_batches
+            total_anom_batches += cls_batches
+
+            # Store
+            all_cls_targets.extend(cls_targets_class)
+            all_cls_preds.extend(cls_preds_class)
+            all_seg_targets.extend(seg_targets_class)
+            all_seg_preds.extend(seg_preds_class)
+            anom_paths.extend(t[0] for t in test_triples)
+            anom_classes.extend([cls_name] * len(test_triples))
+
+            # Per-class metrics
+            class_metrics = evaluate_metrics(
+                cls_targets_class + norm_cls_targets_snapshot,
+                cls_preds_class + norm_cls_preds_snapshot,
+                seg_targets_class, seg_preds_class,
+                cls_threshold=cls_threshold,
+                seg_threshold=seg_threshold,
+            )
+            class_metrics["Pixel_Dice_per_image"] = dice_per_image(seg_targets_class, seg_preds_class, seg_threshold)
+            matched = [p for p, s in zip(norm_cls_preds_snapshot, norm_sources_snapshot) if s == cls_name]
+            if matched:  # AUC against the region-matched normals only
+                class_metrics["Image_AUC_ROC_matched_normals"] = float(roc_auc_score(cls_targets_class + [0.0] * len(matched), cls_preds_class + matched))
+            class_metrics["Average_Total_Loss"] = cls_total_loss / cls_batches
+            class_metrics["Average_Cls_Loss"] = cls_cls_loss / cls_batches
+            class_metrics["Average_Seg_BCE_Loss"] = cls_seg_bce / cls_batches
+            class_metrics["Average_Seg_Dice_Loss"] = cls_seg_dice / cls_batches
+            class_results[cls_name] = class_metrics
+
+    # ------ Overall Metrics
+    overall_metrics = evaluate_metrics(all_cls_targets, all_cls_preds, all_seg_targets, all_seg_preds, cls_threshold=cls_threshold, seg_threshold=seg_threshold)
+    overall_metrics["Pixel_Dice_per_image"] = dice_per_image(all_seg_targets, all_seg_preds, seg_threshold)
+    overall_metrics["Normal_Images_With_FP_Region"] = float(np.mean([(p >= seg_threshold).sum() >= 20 for p in norm_seg_preds_snapshot]))  # >= 20 px = min anomaly size
+    overall_metrics["Average_Total_Loss"] = total_overall_loss / total_batches
+    overall_metrics["Average_Cls_Loss"] = total_cls_loss / total_batches
+    overall_metrics["Average_Seg_BCE_Loss"] = total_seg_bce_loss / total_batches
+    overall_metrics["Average_Seg_Dice_Loss"] = total_seg_dice_loss / total_anom_batches
+    overall_metrics["Average_Total_Loss"] += gamma * overall_metrics["Average_Seg_Dice_Loss"]  # add back the dice loss to the total loss
+
+    overall_metrics["Classification_Threshold"] = cls_threshold
+    overall_metrics["Segmentation_Threshold"] = seg_threshold
+
+    gated = [p * float(c >= cls_threshold) for p, c in zip(all_seg_preds, all_cls_preds)]
+    overall_metrics["Pixel_Dice_per_image_gated"] = dice_per_image(all_seg_targets, gated, seg_threshold)
+    overall_metrics["Normal_Images_With_FP_Region_gated"] = float(np.mean([(c >= cls_threshold) and (p >= seg_threshold).sum() >= 20 for p, c in zip(norm_seg_preds_snapshot, norm_cls_preds_snapshot)]))
+
+    src = np.array(norm_sources_snapshot)
+    norm_pos = np.array(norm_cls_preds_snapshot) >= cls_threshold
+    fp_by_source = {s: {"FP": int(norm_pos[src == s].sum()), "N": int((src == s).sum())} for s in sorted(set(src))}
+
+    hard = src != "ben-ge-8k"
+    n_norm = len(norm_cls_preds_snapshot)
+    anom_t, anom_p = np.array(all_cls_targets[n_norm:]), np.array(all_cls_preds[n_norm:])
+    hard_p = np.array(norm_cls_preds_snapshot)[hard]
+    overall_metrics["Image_AUC_ROC_hard_normals"] = float(roc_auc_score(np.r_[anom_t, np.zeros(len(hard_p))], np.r_[anom_p, hard_p]))
+    overall_metrics["Image_FPR_hard_normals"] = float((hard_p >= cls_threshold).mean())
+
+    K, tt, tp_ = len(TEST_CLASSES), np.array(type_true), np.array(type_pred)
+    v = tt >= 0
+    type_metrics = {
+        "Type_Accuracy": float((tt[v] == tp_[v]).mean()),
+        "Type_Macro_F1": float(f1_score(tt[v], tp_[v], average="macro")),
+        "Type_Confusion(rows=true)": confusion_matrix(tt[v], tp_[v], labels=list(range(K))).tolist(),
+        "EndToEnd_4class_Macro_F1": float(f1_score(e2e_true, e2e_pred, average="macro")),
+        "EndToEnd_4class_Confusion(0=normal)": confusion_matrix(e2e_true, e2e_pred, labels=list(range(K + 1))).tolist(),
+        "Type_Pred_on_Normals_by_Source": {s: np.bincount(np.array(norm_type_pred)[src == s], minlength=K).tolist() for s in sorted(set(src))},
+    } if v.any() else {}
+
+
+    # --- Per-image records (robust / distribution plots) + qualitative samples
+    records = [image_record(f"normal-{p.parent.name}", p, all_cls_preds[i], 0.0, all_seg_preds[i], all_seg_targets[i], seg_threshold, -1, norm_type_pred[i])
+               for i, p in enumerate(normal_test_files)]
+    records += [image_record(c, p, all_cls_preds[n_norm + j], all_cls_targets[n_norm + j], all_seg_preds[n_norm + j], all_seg_targets[n_norm + j], seg_threshold, type_true[j], type_pred[j])
+                for j, (c, p) in enumerate(zip(anom_classes, anom_paths))]
+    vis_samples_dict = select_vis_samples(records, all_seg_preds, all_seg_targets)
+
+
+    conf_matrix = {
+        "TN": int(overall_metrics.pop("TN")),
+        "FP": int(overall_metrics.pop("FP")),
+        "FN": int(overall_metrics.pop("FN")),
+        "TP": int(overall_metrics.pop("TP"))
+    }
+
+    ckpt_id = checkpoint_name.removesuffix(".pth")
+    # Save quantitative results JSON
+    test_report = {
+        "overall_metrics": overall_metrics,
+        "class_metrics": class_results,
+        "confusion_matrix": conf_matrix,
+        "fp_by_normal_source": fp_by_source,
+        "type_classes": TEST_CLASSES,
+        "type_metrics": type_metrics
+    }
+    metrics_file = RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_metrics.json"
+    with metrics_file.open("w", encoding="utf-8") as f:
+        json.dump(test_report, f, indent=4)
+    print(f"Serialized test metrics JSON successfully saved to: {metrics_file}")
+
+    # Save classification scores JSON
+    scores = {"cls_threshold": cls_threshold, "seg_threshold": seg_threshold, "records": records}
+    with (RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_scores.json").open("w") as f:
+        json.dump(scores, f, indent=1)
+
+    # Save visual samples compressed arrays
+    npz_file = RESULTS_DIR / f"{MODEL_VERSION}_{MODEL_RUN}_results/{MODEL_VERSION}_{MODEL_RUN}_{ckpt_id}_test_vis_samples.npz"
+    np.savez_compressed(npz_file, **vis_samples_dict)
+    print(f"Saved compressed qualitative visual samples array map to: {npz_file}")
+
+
+    # ------ Print Summary
+    print("\n" + "=" * 70)
+    print(" OVERALL TEST PERFORMANCE SUMMARY")
+    print("=" * 70)
+    for k, v in overall_metrics.items():
+        print(f"  * {k:20s}: {v:.4f}")
+
+    print("\n" + "=" * 70)
+    print(" PER-CLASS ANOMALY LOCALIZATION BREAKDOWN")
+    print("=" * 70)
+    print(f"{'Class Name':15s} | {'Img AUC':8s} | {'Pix AUC-ROC':11s} | {'Pix AUC-PR':10s} | {'IoU':6s} | {'Dice':6s}")
+    print("-" * 70)
+    for cls_name, m in class_results.items():
+        if cls_name == "normal":
+            continue
+        print(
+            f"{cls_name:15s} | {m['Image_AUC_ROC']:8.4f} | {m['Pixel_AUC_ROC']:11.4f} | "
+            f"{m['Pixel_AUC_PR']:10.4f} | {m['Pixel_IoU']:6.4f} | {m['Pixel_Dice']:6.4f}"
+        )
+    print("=" * 70)
+
+    return overall_metrics, class_results
+
+
+if __name__ == "__main__":
+    checkpoints_to_run = []
+    for ep in EVAL_EPOCHS:
+        ckpt_name = f"epoch_{ep}.pth"
+        if (RESULTS_DIR / ckpt_name).exists():
+            checkpoints_to_run.append(ckpt_name)
+        else:
+            print(f"Notice: '{ckpt_name}' was not found in {RESULTS_DIR} and will be skipped.")
+    # Add last.pth
+    if (RESULTS_DIR / "last.pth").exists() and "last.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("last.pth")
+    # Add best_cls.pth
+    if (RESULTS_DIR / "best_cls.pth").exists() and "best_cls.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("best_cls.pth")
+    # Add best_seg.pth
+    if (RESULTS_DIR / "best_seg.pth").exists() and "best_seg.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("best_seg.pth")
+
+
+    if not checkpoints_to_run:
+        print(f"No valid target checkpoints found in {RESULTS_DIR}")
+    else:
+        print(f"\nSelected {len(checkpoints_to_run)} checkpoint(s) for evaluation: {checkpoints_to_run}")
+
+        multi_summary = {}
+        for ckpt_name in checkpoints_to_run:
+            print("\n" + "=" * 70)
+            print(f" EVALUATING CHECKPOINT: {ckpt_name}")
+            print("=" * 70)
+
+            try:
+                overall_m, class_m = run_test_evaluation(checkpoint_name=ckpt_name, device=DEVICE)
+                multi_summary[ckpt_name] = overall_m
+
+            except Exception as e:
+                print(f"Error evaluating {ckpt_name}: {e}")
+
+
+        # Print summary
+        print("\n" + "=" * 80)
+        print(" EVALUATED CHECKPOINTS PERFORMANCE COMPARISON")
+        print("=" * 80)
+        print(f"{'Checkpoint':20s} | {'Img AUC':8s} | {'Pix AUC-ROC':11s} | {'Pix IoU':8s} | {'Pix Dice':8s}")
+        print("-" * 80)
+        for ckpt_name, m in multi_summary.items():
+            print(
+                f"{ckpt_name:20s} | {m.get('Image_AUC_ROC', 0.0):8.4f} | "
+                f"{m.get('Pixel_AUC_ROC', 0.0):11.4f} | {m.get('Pixel_IoU', 0.0):8.4f} | {m.get('Pixel_Dice', 0.0):8.4f}"
+            )
+            print("=" * 80)
+
+============================== network/UNet_decoder.py ==============================
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class UpBlock(nn.Module):
+    """
+        Bilinear Upsampling concatenated with CNN Skip Connection.
+    """
+    
+    def __init__(self, in_channels, skip_channels, out_channels):
+        super(UpBlock, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels + skip_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x, skip):
+        x = F.interpolate(x, size=skip.shape[-2:], mode='bilinear', align_corners=True)  # upsample to the skip resolution
+        x = torch.cat([x, skip], dim=1)
+        return self.conv(x)
+
+
+
+class UNetDecoder(nn.Module):
+    """
+        U-Net Decoder for Anomaly Localization.
+    """
+
+    def __init__(self, embed_dim, skip_channels=(64, 128, 256)):
+        super(UNetDecoder, self).__init__()
+
+        self.up1 = UpBlock(in_channels=embed_dim, skip_channels=skip_channels[2], out_channels=256)  # 15 -> 30
+        self.up2 = UpBlock(in_channels=256, skip_channels=skip_channels[1], out_channels=128)        # 30 -> 60
+        self.up3 = UpBlock(in_channels=128, skip_channels=skip_channels[0], out_channels=64)         # 60 -> 120
+        self.seg_head = nn.Conv2d(64, 1, kernel_size=1)
+
+
+    def forward(self, bottleneck_feat, skip1, skip2, skip3):
+        d1 = self.up1(bottleneck_feat, skip3)       # (B, 256, 30, 30)
+        d2 = self.up2(d1, skip2)                    # (B, 128, 60, 60)
+        d3 = self.up3(d2, skip1)                    # (B, 64, 120, 120)
+        seg_logits = self.seg_head(d3).squeeze(1)   # (B, 120, 120)
+        return seg_logits
+
+============================== network/loss.py ==============================
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class DiceLoss(nn.Module):
+    """
+        Dice Loss: difference between a predicted mask and a target mask
+        Dice Loss = 1 - (2 * intersection + smooth) / (union + smooth)
+
+        Computes Dice Loss per sample and averages across the batch.
+    """
+
+    def __init__(self, smooth=1e-6):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, logits, targets):
+        probs = torch.sigmoid(logits)  # (B, H, W)
+
+        # Skip normal samples (empty mask), keep only samples and targets with anomalies
+        has_anomaly = targets.sum(dim=(1, 2)) > 0
+        if not has_anomaly.any():  # all samples are normal
+            return probs.sum() * 0.0
+        probs = probs[has_anomaly]
+        targets = targets[has_anomaly]
+
+        intersection = (probs * targets).sum(dim=(1, 2))
+        cardinality = probs.sum(dim=(1, 2)) + targets.sum(dim=(1, 2))
+        dice = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
+        return torch.mean(1.0 - dice)
+
+
+
+
+class MultiTaskLoss(nn.Module):
+    """
+        Total Loss = alpha * Classification BCE + beta * Segmentation BCE + gamma * Segmentation Dice
+    """
+
+    def __init__(self, alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=8.0, delta=0.0):
+        super(MultiTaskLoss, self).__init__()
+        self.alpha = alpha                      # Weight for Classification BCE loss
+        self.beta = beta                        # Weight for Segmentation BCE loss
+        self.gamma = gamma                      # Weight for Segmentation Dice loss
+        self.seg_pos_weight = seg_pos_weight    # up-weights rare anomalous pixels
+        self.delta = delta                      # weight of the anomaly-type CE
+        
+        self.bce_cls = nn.BCEWithLogitsLoss()
+        self.dice_seg = DiceLoss()
+        self.ce_type = nn.CrossEntropyLoss(ignore_index=-1)   # -1 = normal image (no type)
+
+    def forward(self, cls_logits, seg_logits, cls_targets, seg_targets, type_logits=None, type_targets=None):
+        loss_cls = self.bce_cls(cls_logits, cls_targets)
+        
+        pos_weight = torch.tensor(self.seg_pos_weight, device=seg_logits.device)
+        loss_seg_bce = F.binary_cross_entropy_with_logits(seg_logits, seg_targets, pos_weight=pos_weight)
+        loss_seg_dice = self.dice_seg(seg_logits, seg_targets)
+
+        loss_type = cls_logits.sum() * 0.0
+        if type_logits is not None and (type_targets >= 0).any():
+            loss_type = self.ce_type(type_logits.float(), type_targets)
+
+        total_loss = (self.alpha * loss_cls) + (self.beta * loss_seg_bce) + (self.gamma * loss_seg_dice) + (self.delta * loss_type)
+        return total_loss, loss_cls, loss_seg_bce, loss_seg_dice, loss_type
+
+============================== network/trans_UNet.py ==============================
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from network.cnn_encoder import MultiSpectralCNNEncoder
+from network.pretrained_encoder import PretrainedResNetEncoder
+from utils.globals import IN_CHANNELS, EMBED_DIM, NUM_ATT_HEADS, NUM_TRANS_LAYERS, DROPOUT, BACKBONE, INPUT_UPSCALE, TEST_CLASSES
+from network.UNet_decoder import UNetDecoder
+
+
+class TransUNetSentinel2(nn.Module):
+    """
+        Sentinel-2 Anomaly Detection.
+        
+        Inputs: (B, 12, 120, 120)
+        Outputs:
+            - Image Classification Logits: (B)
+            - Pixel Segmentation Logits: (B, 120, 120)
+    """
+    
+    def __init__(self, in_channels=12, embed_dim=512, num_heads=8, num_layers=4, dropout=0.1, backbone="cnn", upscale=2, pretrained=True, num_types=3):
+        super(TransUNetSentinel2, self).__init__()
+
+        self.embed_dim = embed_dim
+
+        # --- Encoder: from-scratch CNN (baseline) or Sentinel-2 pretrained ResNet-50 ("resnet50_softcon" | "resnet50_moco")
+        if backbone == "cnn":
+            self.enc = MultiSpectralCNNEncoder(in_channels=in_channels, embed_dim=embed_dim)
+        else:
+            self.enc = PretrainedResNetEncoder(in_channels=in_channels, embed_dim=embed_dim, weights=backbone.split("_")[1], upscale=upscale, pretrained=pretrained)
+        self.out_size = self.enc.out_size  # 15 (cnn / resnet x2), 8 (resnet x1)
+
+        # --- [CLS] token and Positional Embedding
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+
+        self.num_patches = self.out_size * self.out_size
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim))
+        self.pos_drop = nn.Dropout(p=dropout)
+
+        # --- Transformer Bottleneck
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # --- Image Classification Head
+        self.cls_head = nn.Sequential(
+            nn.Linear(embed_dim, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1)
+        )
+
+        # --- Anomaly Type Head: [CLS] + bottleneck features pooled inside the predicted anomaly region
+        self.type_head = nn.Sequential(
+            nn.Linear(2 * embed_dim, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(128, num_types)
+        )
+
+        # --- U-Net Decoder for Anomaly Localization
+        self.unet_decoder = UNetDecoder(embed_dim=embed_dim, skip_channels=self.enc.skip_channels)
+
+        # --- Parameter initialization
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+
+
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        
+        # --- CNN Encoder
+        feat, skip1, skip2, skip3 = self.enc(x)
+
+
+        # Flatten
+        spatial_seq = feat.flatten(2).transpose(1, 2)  # (B, 15*15, embed_dim) = (B, 225, embed_dim)
+        # [CLS] token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        seq = torch.cat((cls_tokens, spatial_seq), dim=1)  # (B, 226, embed_dim)
+        # Positional Embedding (with dropout)
+        seq = self.pos_drop(seq + self.pos_embed)
+
+
+        # --- Transformer Bottleneck
+        tf_out = self.transformer(seq) # (B, 226, embed_dim)
+        
+        # Extract CLS token
+        cls_token_out = tf_out[:, 0, :]  # (B, embed_dim)
+        # Extract spatial tokens
+        spatial_tokens_out = tf_out[:, 1:, :] # (B, 225, embed_dim)
+
+
+        # --- Classification Branch
+        # Classification logits
+        cls_logits = self.cls_head(cls_token_out).view(-1)  # (B)
+
+
+        # --- Anomaly Localization Branch
+        # Reshape spatial sequence back to 2D feature grid
+        bottleneck_feat = spatial_tokens_out.transpose(1, 2).reshape(B, self.embed_dim, self.out_size, self.out_size)  # (B, embed_dim, 15, 15)
+        
+        # U-Net Decoder
+        seg_logits = self.unet_decoder(bottleneck_feat, skip1, skip2, skip3)  # (B, 120, 120)
+        
+        # --- Anomaly Type Branch
+        # Average pooling of anomaly map probabilities (detached, the anomaly type loss does not modify the segmentation)
+        w = F.adaptive_avg_pool2d(torch.sigmoid(seg_logits).detach().unsqueeze(1), self.out_size)  # (B, 1, 15, 15)
+        # Mask-weighted average pooling of the bottleneck tokens
+        region_feat = (bottleneck_feat * w).sum(dim=(2, 3)) / (w.sum(dim=(2, 3)) + 1e-4)          # (B, embed_dim)
+        # Anomaly classification head
+        type_logits = self.type_head(torch.cat([cls_token_out, region_feat], dim=1))              # (B, num_types)
+
+        return cls_logits, seg_logits, type_logits
+
+
+
+def build_model(pretrained=True):
+    """
+        Build the model from config.yaml
+        (pretrained=False at test time)
+    """
+    return TransUNetSentinel2(
+        in_channels=IN_CHANNELS, embed_dim=EMBED_DIM, num_heads=NUM_ATT_HEADS, num_layers=NUM_TRANS_LAYERS, dropout=DROPOUT,
+        backbone=BACKBONE, upscale=INPUT_UPSCALE, pretrained=pretrained, num_types=len(TEST_CLASSES),
+    )
+
+============================== network/__init__.py ==============================
+
+
+
+============================== network/pretrained_encoder.py ==============================
+
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import timm
+
+
+# SSL4EO-S12 ResNet-50 checkpoints
+WEIGHT_URLS = {
+    "softcon": "https://huggingface.co/wangyi111/softcon/resolve/62ff465b2e7467dbfc70758ec1e9d08ab87fc46b/B13_rn50_softcon.pth",
+    "moco": "https://hf.co/torchgeo/resnet50_sentinel2_all_moco/resolve/da4f3c9dbe09272eb902f3b37f46635fa4726879/resnet50_sentinel2_all_moco-df8b932e.pth",
+}
+
+B10_INDEX = 10  # SSL4EO-S12 uses 13 L1C bands [B1..B8A, B9, B10, B11, B12]. L2A images have no B10
+
+# SSL4EO-S12 per-band statistics (DN scale)
+S2_MEAN = [1612.9, 1397.6, 1322.3, 1373.1, 1561.0, 2108.4, 2390.7, 2318.7, 2581.0, 837.7, 2195.2, 1537.4]
+S2_STD = [791.0, 854.3, 878.7, 1144.9, 1127.5, 1164.2, 1276.0, 1249.5, 1345.9, 577.5, 1340.0, 1142.9]
+
+
+class PretrainedResNetEncoder(nn.Module):
+    """
+        Sentinel-2 pretrained (SSL4EO-S12) ResNet-50 encoder.
+        Input is upsampled by "upscale" before the ResNet (so that stride-4 stem does not erase small anomalies).
+        Shallow stem on the raw (non-interpolated) input provides the full-resolution skip.
+
+        Input: (B, 12, 120, 120)
+        Output (upscale=2):
+            feat (B, embed_dim, 15, 15)
+            skip1 (B, 96, 120, 120)
+            skip2 (B, 256, 60, 60)
+            skip3 (B, 512, 30, 30)
+    """
+
+    def __init__(self, in_channels=12, embed_dim=512, weights="softcon", upscale=2, pretrained=True):
+        super(PretrainedResNetEncoder, self).__init__()
+        self.upscale = upscale
+        self.out_size = math.ceil(120 * upscale / 16)  # spatial size after layer3 (stride 16)
+        self.skip_channels = (32 + 64, 256, 512)       # (skip1, skip2, skip3)
+
+        # --- Input normalization
+        if weights == "softcon":    # pretrained on per-band standardized DNs
+            mean = torch.tensor(S2_MEAN) / 10000.0
+            std = torch.tensor(S2_STD) / 10000.0
+        else:   # MoCo: pretrained on DN / 10000 (= our reflectance)
+            mean = torch.zeros(in_channels)
+            std = torch.ones(in_channels)
+        self.register_buffer("band_mean", mean.view(1, -1, 1, 1))
+        self.register_buffer("band_std", std.view(1, -1, 1, 1))
+
+        # --- ResNet-50 backbone
+        self.backbone = timm.create_model("resnet50", in_chans=in_channels, num_classes=0, global_pool="")
+        if pretrained:
+            state_dict = torch.hub.load_state_dict_from_url(WEIGHT_URLS[weights], map_location="cpu")
+            w = state_dict["conv1.weight"]  # (64, 13, 7, 7)
+            state_dict["conv1.weight"] = torch.cat([w[:, :B10_INDEX], w[:, B10_INDEX + 1:]], dim=1)  # drop B10 -> (64, 12, 7, 7)
+            missing, unexpected = self.backbone.load_state_dict(state_dict, strict=False)
+            assert not missing, f"Missing keys: {missing}"
+            assert set(unexpected) <= {"fc.weight", "fc.bias"}, f"Unexpected keys: {unexpected}"
+        self.backbone.layer4 = nn.Identity()  # don't use stride 32 (too coarse for small anomalies)
+
+        # --- Full-resolution stem on the raw input (no interpolation)
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        # --- Projection of layer3 features to the transformer dimension
+        self.proj = nn.Sequential(
+            nn.Conv2d(1024, embed_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(embed_dim),
+            nn.ReLU(inplace=True)
+        )
+
+
+    def forward(self, x):
+        # Normalize input
+        x = (x - self.band_mean) / self.band_std
+        
+        stem = self.stem(x)  # (B, 32, 120, 120)
+
+        if self.upscale != 1:
+            x = F.interpolate(x, scale_factor=self.upscale, mode="bilinear", align_corners=False)  # (B, 12, 240, 240)
+
+        b = self.backbone
+        c1 = b.act1(b.bn1(b.conv1(x)))          # (B, 64, 120, 120)
+        l1 = b.layer1(b.maxpool(c1))            # (B, 256, 60, 60)
+        l2 = b.layer2(l1)                       # (B, 512, 30, 30)
+        l3 = b.layer3(l2)                       # (B, 1024, 15, 15)
+
+        if c1.shape[-2:] != stem.shape[-2:]:    # only when upscale=1
+            c1 = F.interpolate(c1, size=stem.shape[-2:], mode="bilinear", align_corners=False)
+        skip1 = torch.cat([stem, c1], dim=1)    # (B, 96, 120, 120)
+
+        return self.proj(l3), skip1, l1, l2
+
+============================== network/cnn_encoder.py ==============================
+
+import torch
+import torch.nn as nn
+
+
+OUT_SPATIAL_SIZE = 15  # Output spatial size of the CNN encoder (15x15)
+
+
+class MultiSpectralCNNEncoder(nn.Module):
+    """
+        Multi-spectral CNN encoder.
+
+        Input: (B, C, H, W) = (B, 12, 120, 120)
+        Output: (B, embed_dim, H', W')
+    """
+
+    def __init__(self, in_channels=12, embed_dim=512):
+        super(MultiSpectralCNNEncoder, self).__init__()
+
+        self.enc1 = nn.Sequential(  # Input: (B, 12, 120, 120)
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1, bias=False),  # (B, 64, 120, 120)
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )  # Output: (B, 64, 120, 120)
+        
+        self.enc2 = nn.Sequential(
+            nn.MaxPool2d(2),  # (B, 64, 60, 60)
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),  # (B, 128, 60, 60)
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )  # Output: (B, 128, 60, 60)
+        
+        self.enc3 = nn.Sequential(
+            nn.MaxPool2d(2),  # (B, 128, 30, 30)
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),  # (B, 256, 30, 30)
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True)
+        )  # Output: (B, 256, 30, 30)
+        
+        self.enc4 = nn.Sequential(
+            nn.MaxPool2d(2),  # (B, 256, 15, 15)
+            nn.Conv2d(256, embed_dim, kernel_size=3, padding=1, bias=False),  # (B, embed_dim, 15, 15)
+            nn.BatchNorm2d(embed_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(embed_dim, embed_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(embed_dim),
+            nn.ReLU(inplace=True)
+        )  # Output: (B, embed_dim, 15, 15)
+
+        self.out_size = OUT_SPATIAL_SIZE
+        self.skip_channels = (64, 128, 256)  # (skip1, skip2, skip3)
+
+
+        # --- Input normalization (per-band mean/std of the training images)
+        self.register_buffer("band_mean", torch.zeros(1, in_channels, 1, 1))
+        self.register_buffer("band_std", torch.ones(1, in_channels, 1, 1))
+
+        
+    def forward(self, x):
+        # x: (B, 12, 120, 120)
+        
+        # Normalization
+        x = (x - self.band_mean) / self.band_std
+
+        skip1 = self.enc1(x)        # (B, 64, 120, 120)
+        skip2 = self.enc2(skip1)    # (B, 128, 60, 60)
+        skip3 = self.enc3(skip2)    # (B, 256, 30, 30)
+        feat = self.enc4(skip3)     # (B, embed_dim, 15, 15)
+        return feat, skip1, skip2, skip3  # Return the final feature map and skip connections
+
+============================== data/__init__.py ==============================
+
+
+
+============================== data/dataset.py ==============================
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import WeightedRandomSampler
+from collections import Counter
+import random
+
+from utils.globals import DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE, MAX_SHIFT, TEST_CLASSES
+
+
+
+def _load_image(path, clip=CLIP_REFLECTANCE):
+    """
+        Load (12, 120, 120) float32 image from .npy file and clip.
+    """
+
+    arr = np.load(path).astype(np.float32)
+    if arr.shape[0] != IN_CHANNELS:
+        raise ValueError(f"{path}: expected {IN_CHANNELS} bands, got shape {arr.shape}")
+
+    # Clip values to [0, clip]
+    if clip is not None:
+        np.clip(arr, 0.0, clip, out=arr)
+
+    return torch.from_numpy(arr)  # (12, 120, 120) = (C, H, W)
+
+
+def _random_aug(image, mask):
+    """
+        Randomly flip, rotation, and translation of the image and mask.
+    """
+    # Random flip
+    if random.random() < 0.5:
+        image = torch.flip(image, dims=[-1])
+        mask = torch.flip(mask, dims=[-1])
+    if random.random() < 0.5:
+        image = torch.flip(image, dims=[-2])
+        mask = torch.flip(mask, dims=[-2])
+    # Random rotation
+    k = random.randint(0, 3)
+    if k:
+        image = torch.rot90(image, k, dims=[-2, -1])
+        mask = torch.rot90(mask, k, dims=[-2, -1])
+
+    # Random translation with reflect padding
+    if MAX_SHIFT > 0:
+        p = MAX_SHIFT
+        dy, dx = random.randint(-p, p), random.randint(-p, p)
+        image = F.pad(image.unsqueeze(0), (p, p, p, p), mode="reflect")[0, :, p + dy:p + dy + 120, p + dx:p + dx + 120]
+        mask = F.pad(mask[None, None], (p, p, p, p), mode="reflect")[0, 0, p + dy:p + dy + 120, p + dx:p + dx + 120]
+    
+    return image, mask
+
+
+class NormalImagesDataset(Dataset):
+    """
+        Unlabelled normal images, for unsupervised training.
+    """
+
+    def __init__(self, files, clip=CLIP_REFLECTANCE, augment=False):
+        if len(files) == 0:
+            raise ValueError("NormalImagesDataset received an empty file list.")
+        
+        self.files = list(files)
+        self.clip = clip
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, index):
+        image = _load_image(self.files[index], self.clip)
+        mask = torch.zeros((120, 120), dtype=torch.float32)
+        if self.augment:
+            image, mask = _random_aug(image, mask)
+        cls_tensor = torch.tensor(0.0, dtype=torch.float32)
+        return image, cls_tensor, mask, torch.tensor(-1)
+
+
+class AnomalyImagesDataset(Dataset):
+    """
+        Anomalous images with ground-truth pixel-level binary masks.
+    """
+
+    def __init__(self, triples, clip=CLIP_REFLECTANCE, return_meta=False, augment=False):
+        self.triples = list(triples)
+        self.clip = clip
+        self.return_meta = return_meta  # True for testing, False for training
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.triples)
+
+    def __getitem__(self, index):
+        img_path, mask_path, class_name = self.triples[index]
+        image = _load_image(img_path, self.clip)
+        mask = torch.from_numpy(np.load(mask_path).astype(np.uint8)).float()  # (120, 120)
+        if self.augment:
+            image, mask = _random_aug(image, mask)
+        cls_label = 1.0 if torch.max(mask) > 0.5 else 0.0  # 1 if anomalous pixels exist, else 0
+        cls_tensor = torch.tensor(cls_label, dtype=torch.float32)
+
+        type_tensor = torch.tensor(TEST_CLASSES.index(class_name) if cls_label > 0 else -1)
+        if self.return_meta:    # for testing
+            return image, cls_tensor, mask, type_tensor, class_name, img_path.stem
+
+        return image, cls_tensor, mask, type_tensor  # for training
+
+
+def make_source_weights(files, power):
+    """
+        Dataset is unbalanced -> oversample rare training sources with weight 1/n_source^power.
+    """
+
+    if power <= 0:
+        return None
+
+    def _source_name(item):
+        if isinstance(item, tuple):        # (img_path, mask_path, class_name) anomaly triple
+            return f"{item[2]}_anomaly"
+        return item.parent.name            # plain Path -> normal image
+
+    sources = [_source_name(f) for f in files]
+    counts = Counter(sources)
+    return torch.tensor([1.0 / (counts[s] ** power) for s in sources], dtype=torch.double)
+
+
+def _seed_worker(worker_id):
+    """
+        Re-seed per DataLoader worker (otherwise forked workers
+        inherit identical state, correlating augmentation choices).
+    """
+    seed = torch.initial_seed() % 2**32
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def make_loader(dataset, batch_size, num_workers=0, shuffle=False, seed=0, weights=None):
+    """
+        Create DataLoader for the given dataset.
+        Stack B (batch_size) images -> (B, C, H, W)
+
+        weights: per-sample sampling weights computed with make_source_weights().
+    """
+
+    generator = None
+    if shuffle:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+
+    # WeightedRandomSampler replaces shuffling.
+    sampler = None
+    if weights is not None and shuffle:
+        sampler = WeightedRandomSampler(
+            weights, num_samples=len(dataset), replacement=True, generator=generator
+        )
+        shuffle = False
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        drop_last=sampler is not None or shuffle,
+        generator=generator,
+        persistent_workers=num_workers > 0,
+        worker_init_fn=_seed_worker if num_workers > 0 else None,
+    )
+
+============================== utils/globals.py ==============================
+
+import torch
+from pathlib import Path
+import yaml
+import os
+
+def _load_config():
+    """
+        Load the global variables from the config.yaml file.
+    """
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    with config_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+config = _load_config()
+
+def _resolve(path_str, parents_up=2):
+    path = Path(path_str)
+    if not path.is_absolute():
+        path = (Path(__file__).resolve().parents[parents_up] / path).resolve()
+    return path
+
+
+
+# ======================================================= GLOBALS
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# --------------------------- paths
+_env_root = os.environ.get("SSAD_DATA_ROOT")
+DATASET_PATH = Path(_env_root) if _env_root else _resolve(config["dataset_path"], 2)
+ARTIFACTS_DIR = _resolve(config.get("artifacts_dir", "artifacts"), 1)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# --------------------------- data
+TRAIN_SOURCES = config["TRAIN_SOURCES"]
+TEST_CLASSES = config["TEST_CLASSES"]
+
+NORMAL_VAL_FRACTION = config["NORMAL_VAL_FRACTION"]
+NORMAL_TEST_FRACTION = config.get("NORMAL_TEST_FRACTION", 0.10)
+ANOMAL_VAL_FRACTION = config["ANOMAL_VAL_FRACTION"]
+ANOMAL_TEST_FRACTION = config.get("ANOMAL_TEST_FRACTION", 0.20)
+
+SPLIT_SALT = config["SPLIT_SALT"]
+GROUPED_SPLIT = config.get("GROUPED_SPLIT", False)
+
+CLIP_REFLECTANCE = config["CLIP_REFLECTANCE"]
+
+MAX_SHIFT = int(config.get("MAX_SHIFT", 0))
+
+
+# --------------------------- model
+BACKBONE = config.get("BACKBONE", "cnn")
+INPUT_UPSCALE = int(config.get("INPUT_UPSCALE", 1))
+
+IN_CHANNELS = config["IN_CHANNELS"]
+EMBED_DIM = config["EMBED_DIM"]
+NUM_ATT_HEADS = config["NUM_ATT_HEADS"]
+NUM_TRANS_LAYERS = config["NUM_TRANS_LAYERS"]
+DROPOUT = config["DROPOUT"]
+
+
+# --------------------------- train
+EPOCHS = config["EPOCHS"]
+BATCH_IMAGES = config["BATCH_IMAGES"]
+
+LR = float(config["LR"])
+WEIGHT_DECAY = float(config["WEIGHT_DECAY"])
+AMP = config["AMP"]
+
+ENCODER_LR_MULT = float(config.get("ENCODER_LR_MULT", 1.0))
+WARMUP_EPOCHS = int(config.get("WARMUP_EPOCHS", 0))
+TYPE_LOSS_WEIGHT = float(config.get("TYPE_LOSS_WEIGHT", 0.0))
+
+NUM_WORKERS = config["NUM_WORKERS"]
+SOURCE_BALANCE_POWER = float(config.get("SOURCE_BALANCE_POWER", 0.0))
+SEG_POS_WEIGHT = float(config.get("SEG_POS_WEIGHT", 8.0))
+
+SEED = config["SEED"]
+
+MODEL_VERSION = config.get("MODEL_VERSION", "v6")
+MODEL_RUN = config.get("MODEL_RUN", "0")
+
+
+# --------------------------- test
+TARGET_RECALL = float(config.get("TARGET_RECALL", 0.95))
+CLS_THRESHOLD_MODE = config.get("CLS_THRESHOLD_MODE", "recall")
+TARGET_FPR = float(config.get("TARGET_FPR", 0.15))
+
+
+
+# ======================================================= VALIDATION
+if not DATASET_PATH.is_dir():
+    raise FileNotFoundError(
+        f"Dataset not found at {DATASET_PATH}, "
+        "if using kaggle, add:  os.environ[\"SSAD_DATA_ROOT\"] = \"/kaggle/input/sentinel2-anomaly-detection\""
+    )
+
+============================== utils/__init__.py ==============================
+
+
+
+============================== utils/splits.py ==============================
+
+import hashlib
+from pathlib import Path
+import re
+
+from utils.globals import (DATASET_PATH, TRAIN_SOURCES, TEST_CLASSES,
+                           NORMAL_VAL_FRACTION, NORMAL_TEST_FRACTION, ANOMAL_VAL_FRACTION, ANOMAL_TEST_FRACTION,
+                           SPLIT_SALT, GROUPED_SPLIT)
+
+
+
+def stable_bucket(name, salt="", n_buckets=1000):
+    """
+        Randomly assign filenames into n_buckets buckets (deterministically).
+        Filenames always hash to the same bucket.
+    """
+    digest = hashlib.sha1(f"{salt}::{name}".encode("utf-8")).hexdigest()
+    return int(digest[:12], 16) % n_buckets
+
+
+def group_key(source, filename):
+    """
+        If file comes from a grouped source (ben-ge data), return the identifier of the acquisition it came from.
+    """
+    # ben-ge product ID is the first part of the filename (e.g. S2A_MSIL2A_20230501T103021_N0509_R108_T32TNR_20230501T123456)
+    m = re.match(r"(S2[AB]_MSIL2A_\d+T\d+)_", filename)
+    if m:
+        return f"{source}/{m.group(1)}"
+    
+    return f"{source}/{filename}"  # fall back to per-file
+
+
+def split_normals(root=DATASET_PATH, sources=None, val_fraction=None, test_fraction=None, salt=SPLIT_SALT):
+    """
+        Split normal images into (train_files, val_files, test_files), deterministically
+        (data in one bucket always goes in the same split).
+    """
+    sources = sources or TRAIN_SOURCES
+    val_fraction = NORMAL_VAL_FRACTION if val_fraction is None else val_fraction
+    test_fraction = NORMAL_TEST_FRACTION if test_fraction is None else test_fraction
+    val_thr = int(round(val_fraction * 1000))
+    test_thr = val_thr + int(round(test_fraction * 1000))
+
+    train_files, val_files, test_files = [], [], []
+    for source in sources:
+        src_dir = root / "normal" / source
+        if not src_dir.is_dir():
+            raise FileNotFoundError(f"Missing normal source: {src_dir}")
+
+        for path in sorted(src_dir.glob("*.npy")):
+            # ben-ge contains multiple files from the same acquisition -> hash per acquisition (group) instead of per file
+            key = group_key(source, path.name) if GROUPED_SPLIT else f"{source}/{path.name}"
+            bucket = stable_bucket(key, salt)
+            if bucket < val_thr:
+                val_files.append(path)
+            elif bucket < test_thr:
+                test_files.append(path)
+            else:
+                train_files.append(path)
+
+    return train_files, val_files, test_files  # file paths
+
+
+def split_anomal(root=DATASET_PATH, classes=None, test_fraction=None, val_fraction=None, salt=SPLIT_SALT):
+    """
+        Split anomalous images
+
+        out =
+            {
+                "burn_scars": {
+                    "train": [ (img_path, mask_path, 'burn_scars'), (img_path, mask_path, 'burn_scars'), ... ],
+                    "val": [ (img_path, mask_path, 'burn_scars'), (img_path, mask_path, 'burn_scars'), ... ],
+                    "test": [ (img_path, mask_path, 'burn_scars'), (img_path, mask_path, 'burn_scars'), ... ]
+                },
+                "floods": {
+                    "train": [ (img_path, mask_path, 'floods'), (img_path, mask_path, 'floods'), ... ],
+                    "val": [ (img_path, mask_path, 'floods'), (img_path, mask_path, 'floods'), ... ],
+                    "test": [ (img_path, mask_path, 'floods'), (img_path, mask_path, 'floods'), ... ]
+                },
+                ...
+            }
+    """
+
+    classes = classes or TEST_CLASSES
+
+    test_fraction = ANOMAL_TEST_FRACTION if test_fraction is None else test_fraction
+    val_fraction = ANOMAL_VAL_FRACTION if val_fraction is None else val_fraction
+    val_thr = int(round(val_fraction * 1000))
+    test_thr = val_thr + int(round(test_fraction * 1000))
+
+    out = {}
+    for cls in classes:
+        img_dir = root / "anomaly" / cls / "imgs"
+        mask_dir = root / "anomaly" / cls / "masks"
+
+        if not img_dir.is_dir() or not mask_dir.is_dir():
+            raise FileNotFoundError(f"Missing anomaly class: {root / 'anomaly' / cls}")
+        
+        buckets = {"train": [], "val": [], "test": []}
+        for img_path in sorted(img_dir.glob("*.npy")):
+            mask_path = mask_dir / f"{img_path.stem}_mask.npy"
+            if not mask_path.exists():
+                raise FileNotFoundError(f"No mask for {img_path}")
+
+            bucket = stable_bucket(f"{cls}/{img_path.name}", salt)
+            if bucket < val_thr:
+                key = "val"
+            elif bucket < test_thr:
+                key = "test"
+            else:
+                key = "train"
+            
+            buckets[key].append((img_path, mask_path, cls))
+
+        out[cls] = buckets
+    return out
+
+
+def _subsample_key(item):
+    """
+        Identity of an item: filenames only.
+    """
+    if isinstance(item, Path):
+        return item.name
+    if isinstance(item, (tuple, list)):
+        return "|".join(_subsample_key(sub) for sub in item)
+    return str(item)
+
+
+def subsample(items, limit, salt=SPLIT_SALT):
+    """
+        Keep at most "limit" items by random subsampling, deterministically
+        (sorts items by hash, which is consistent).
+    """
+    if limit is None or len(items) <= limit:
+        return items
+    return sorted(items, key=lambda it: stable_bucket(_subsample_key(it), salt, n_buckets=10 ** 9))[:limit]
+
+
+def split_fingerprint():
+    """
+        Compute a fingerprint of the current split.
+    """
+    h = hashlib.sha256()
+
+    train_files, val_files, test_files = split_normals()
+    for tag, files in (("TRAIN", train_files), ("VAL", val_files), ("TEST", test_files)):
+        for name in sorted(f"{p.parent.name}/{p.name}" for p in files):
+            h.update(f"{tag}:{name}\n".encode())
+
+    for cls, buckets in sorted(split_anomal().items()):
+        for part in ("train", "val", "test"):
+            for name in sorted(t[0].name for t in buckets[part]):
+                h.update(f"{cls}:{part}:{name}\n".encode())
+
+    return h.hexdigest()
+
+
+if __name__ == "__main__":
+    train_files, val_files, test_files = split_normals()
+    print(f"normals      : {len(train_files)} train / {len(val_files)} val / {len(test_files)} test")
+    
+    for cls, b in split_anomal().items():
+        print(f"  {cls:<12} val={len(b['val']):5d} test={len(b['test']):5d}")
+    print(f"SPLIT_SALT   : {SPLIT_SALT}")
+    print(f"GROUPED_SPLIT: {GROUPED_SPLIT}")
+    print(f"FINGERPRINT  : {split_fingerprint()}")
