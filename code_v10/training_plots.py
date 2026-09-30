@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from utils.globals import ARTIFACTS_DIR
 
 MODEL_VERSION = "v10"
-MODEL_RUN = "2"
+MODEL_RUN = "3"
 
 def plot_training_metrics(metrics_path, output_dir):
     metrics_path = Path(metrics_path)

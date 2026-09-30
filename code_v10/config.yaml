@@ -32,7 +32,7 @@ DROPOUT: 0.1            # transformer dropout rate
 
 
 # --------------------------- train
-EPOCHS: 50
+EPOCHS: 30
 BATCH_IMAGES: 32
 
 LR: 1e-4
@@ -44,7 +44,7 @@ WARMUP_EPOCHS: 2
 TYPE_LOSS_WEIGHT: 0.5          # 0.0 = ablation without the anomaly-type head
 
 NUM_WORKERS: 2              # DataLoader worker processes
-SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SOURCE_BALANCE_POWER: 1.0   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
 SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segmentation task (more importance in the loss to anomalous pixels)
 
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
@@ -57,5 +57,5 @@ CLS_LABEL_SMOOTHING: 0.05   # label smoothing for the classification head (0.0 =
 
 # --------------------------- test
 TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
-CLS_THRESHOLD_MODE: "recall"    # "recall" (TARGET_RECALL) | "f1" | "fpr" (TARGET_FPR)
+CLS_THRESHOLD_MODE: "fpr"       # "recall" (TARGET_RECALL) | "f1" | "fpr" (TARGET_FPR)
 TARGET_FPR: 0.15                # max FPR on val region-matched normals (mode "fpr")

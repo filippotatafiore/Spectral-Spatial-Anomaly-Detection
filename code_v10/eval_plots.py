@@ -10,7 +10,7 @@ from utils.globals import ARTIFACTS_DIR
 
 
 MODEL_VERSION = "v10"
-MODEL_RUN = "2"
+MODEL_RUN = "3"
 MODEL_ID = "best_seg"       # "best_cls" | "best_seg" | "last" | "epoch_XX"
 
 
