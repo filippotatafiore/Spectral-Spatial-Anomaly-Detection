@@ -21,8 +21,8 @@ MAX_SHIFT: 40               # random translation (px) in training data augmentat
 
 
 # --------------------------- model
-BACKBONE: "cnn"               # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
-INPUT_UPSCALE: 1              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
+BACKBONE: "resnet50_softcon"  # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
+INPUT_UPSCALE: 2              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
 
 IN_CHANNELS: 12         # number of input channels (12 BANDS)
 EMBED_DIM: 512          # embedding dimension (output dim of the CNN encoder, dim of the transformer)
@@ -50,7 +50,7 @@ SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segme
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v11"        # model version for saving artifacts
-MODEL_RUN: "0"              # model run number
+MODEL_RUN: "1"              # model run number
 
 
 # --------------------------- test
