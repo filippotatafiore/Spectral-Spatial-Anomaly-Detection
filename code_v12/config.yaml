@@ -1,0 +1,68 @@
+# --------------------------- paths
+dataset_path: "Sentinel2_sup_anomaly_detection_v2"
+artifacts_dir: "artifacts"
+
+
+# --------------------------- data
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "deforestation", "mines"]
+TEST_CLASSES: ["burn_scars", "deforestation", "mines"]
+
+NORMAL_VAL_FRACTION: 0.10   # fraction of normals held out for validation
+NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for testing
+ANOMAL_VAL_FRACTION: 0.20   # fraction of anomalies held out for validation
+ANOMAL_TEST_FRACTION: 0.20   # fraction of anomalies held out for validation
+
+SPLIT_SALT: "ssad_1"
+GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val
+
+CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
+
+MAX_SHIFT: 40               # random translation (px) in training data augmentation
+
+
+# --------------------------- model
+BACKBONE: "resnet50_softcon"  # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
+INPUT_UPSCALE: 2              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
+
+IN_CHANNELS: 12         # number of input channels (12 BANDS)
+EMBED_DIM: 512          # embedding dimension (output dim of the CNN encoder, dim of the transformer)
+NUM_ATT_HEADS: 8        # number of attention heads in the transformer
+NUM_TRANS_LAYERS: 4     # number of transformer layers
+DROPOUT: 0.1            # transformer dropout rate
+
+
+# --------------------------- train
+EPOCHS: 50
+BATCH_IMAGES: 32
+
+LR: 1e-4
+WEIGHT_DECAY: 1e-4
+AMP: true                   # float16 autocast
+
+ENCODER_LR_MULT: 0.1
+WARMUP_EPOCHS: 2
+TYPE_LOSS_WEIGHT: 0.5          # 0.0 = ablation without the anomaly-type head
+
+NUM_WORKERS: 2              # DataLoader worker processes
+SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segmentation task (more importance in the loss to anomalous pixels)
+
+SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
+
+MODEL_VERSION: "v12"        # model version for saving artifacts
+MODEL_RUN: "0"              # model run number
+
+
+# --------------------------- normality prototypes
+NUM_PROTOTYPES: 64          # number of normal prototypes in the memory
+PROTO_DIM: 128              # dimension of the deviation embedding space
+PROTO_MOMENTUM: 0.99        # EMA momentum of the prototype update
+DEV_MARGIN: 0.5             # anomalous tokens pushed to cosine distance >= DEV_MARGIN from every normal prototype
+DEV_TOPK: 8                 # image deviation score = mean of the top-k token deviations
+DEV_LOSS_WEIGHT: 0.5        # 0.0 = ablation (prototype memory without the deviation loss)
+
+
+# --------------------------- test
+TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
+CLS_THRESHOLD_MODE: "recall"    # "recall" (TARGET_RECALL) | "f1" | "fpr" (TARGET_FPR)
+TARGET_FPR: 0.15                # max FPR on val region-matched normals (mode "fpr")
