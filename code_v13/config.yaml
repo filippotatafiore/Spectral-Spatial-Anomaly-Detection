@@ -73,7 +73,8 @@ PROTO_RESEED_MIN_RATE: 0.1  # after warmup the prototype EMA step is scaled by l
 CRAT_PROB: 0.2              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
 CRAT_MIN_COVER: 0.02        # donor anomalies = training anomalies with partial masks (coverage in [min, max])
 CRAT_MAX_COVER: 0.7
-CRAT_GAIN_CLAMP: 1.5        # per-band radiometric harmonization gain clamped to [1/x, x]
+CRAT_GAIN_CLAMP: 1.5        # single brightness gain (same for all bands, spectral shape preserved) clamped to [1/x, x]
+CRAT_MIN_DONORS: 30         # anomaly types with fewer donors are not transplanted (burn scars: only 8 partial masks)
 
 
 # --------------------------- coarse-label-aware segmentation

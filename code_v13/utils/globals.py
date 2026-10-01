@@ -99,6 +99,7 @@ CRAT_PROB = float(config.get("CRAT_PROB", 0.0))
 CRAT_MIN_COVER = float(config.get("CRAT_MIN_COVER", 0.02))
 CRAT_MAX_COVER = float(config.get("CRAT_MAX_COVER", 0.7))
 CRAT_GAIN_CLAMP = float(config.get("CRAT_GAIN_CLAMP", 1.5))
+CRAT_MIN_DONORS = int(config.get("CRAT_MIN_DONORS", 1))
 SEG_IGNORE_BORDER = int(config.get("SEG_IGNORE_BORDER", 0))
 HOLDOUT_CLASS = config.get("HOLDOUT_CLASS")
 

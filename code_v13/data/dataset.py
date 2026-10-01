@@ -6,7 +6,10 @@ from torch.utils.data import WeightedRandomSampler
 from collections import Counter
 import random
 
-from utils.globals import DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE, MAX_SHIFT, TEST_CLASSES, CRAT_MIN_COVER, CRAT_MAX_COVER, CRAT_GAIN_CLAMP
+from utils.globals import (
+    DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE, MAX_SHIFT, TEST_CLASSES,
+    CRAT_MIN_COVER, CRAT_MAX_COVER, CRAT_GAIN_CLAMP, CRAT_MIN_DONORS,
+)
 
 
 
@@ -53,7 +56,7 @@ def _random_aug(image, mask):
     return image, mask
 
 
-def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER):
+def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER, min_donors=CRAT_MIN_DONORS):
     """
         Training anomalies usable as transplantation donors (partial masks only), grouped by anomaly type.
     """
@@ -62,14 +65,14 @@ def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER
         cover = float((np.load(mask_path) > 0).mean())
         if min_cover <= cover <= max_cover:
             pool.setdefault(cls, []).append((img_path, mask_path))
-    return pool
+    return {c: v for c, v in pool.items() if len(v) >= min_donors}   # too few donors -> the same few shapes would be pasted over and over
 
 
 def _transplant(canvas, donor, dmask, gain_clamp=CRAT_GAIN_CLAMP):
     """
         Paste the masked anomaly of a donor image into a canvas (normal) image:
             - random rotation/flip of the donor (new position/orientation of the anomaly)
-            - per-band gain matching the donor background to the canvas (radiometric harmonization)
+            - one brightness gain (median over bands) matching the donor background to the canvas: band ratios (NDVI, NBR, ...) preserved
             - feathered 5x5 edges (no sharp seams; the seam band is also ignored by the seg loss)
     """
     k = random.randint(0, 3)
@@ -79,8 +82,9 @@ def _transplant(canvas, donor, dmask, gain_clamp=CRAT_GAIN_CLAMP):
 
     bg = (dmask < 0.5) & (donor.abs().sum(dim=0) > 0)                       # valid donor background pixels
     if bg.sum() >= 100:  # harmonize only with enough valid background (an empty selection would give NaN gains)
-        gain = (canvas.mean(dim=(1, 2)) + 1e-4) / (donor[:, bg].mean(dim=1) + 1e-4)
-        donor = (donor * gain.clamp(1.0 / gain_clamp, gain_clamp).view(-1, 1, 1)).clamp(0.0, CLIP_REFLECTANCE)
+        ratio = (canvas.mean(dim=(1, 2)) + 1e-4) / (donor[:, bg].mean(dim=1) + 1e-4)
+        gain = ratio.median().clamp(1.0 / gain_clamp, gain_clamp)      # one gain for all bands -> spectral shape of the anomaly preserved
+        donor = (donor * gain).clamp(0.0, CLIP_REFLECTANCE)
 
     alpha = F.avg_pool2d(dmask[None, None], 5, stride=1, padding=2, count_include_pad=False)[0, 0]
     return alpha * donor + (1.0 - alpha) * canvas, dmask
@@ -107,14 +111,14 @@ class NormalImagesDataset(Dataset):
 
     def _cross_region_transplant(self, image, source):
         """
-            CRAT: transplant an anomaly whose type differs from the canvas region (types sampled uniformly -> rare types oversampled).
+            CRAT: transplant an anomaly whose type differs from the canvas region (types sampled with weight sqrt(#donors)).
             Returns (image, mask, type index), or the unchanged image with type -1 if no valid transplant.
         """
         empty = torch.zeros((120, 120), dtype=torch.float32)
         types = [c for c in self.donors if c != source and self.donors[c]]
         if not types or (image.abs().sum(dim=0) == 0).float().mean() > 0.05:    # skip canvases with no-data
             return image, empty, -1
-        cls = random.choice(types)
+        cls = random.choices(types, weights=[len(self.donors[c]) ** 0.5 for c in types])[0]
         img_path, mask_path = random.choice(self.donors[cls])
         donor = _load_image(img_path, self.clip)
         dmask = torch.from_numpy(np.load(mask_path).astype(np.uint8)).float()
