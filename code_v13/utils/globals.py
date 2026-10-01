@@ -101,6 +101,8 @@ CRAT_MAX_COVER = float(config.get("CRAT_MAX_COVER", 0.7))
 CRAT_GAIN_CLAMP = float(config.get("CRAT_GAIN_CLAMP", 1.5))
 CRAT_MIN_DONORS = int(config.get("CRAT_MIN_DONORS", 1))
 CRAT_MIN_NDVI_DROP = float(config.get("CRAT_MIN_NDVI_DROP", 0.0))
+CRAT_MAX_SAM = float(config.get("CRAT_MAX_SAM", 0.0))
+CRAT_MIN_CANVAS_NDVI = float(config.get("CRAT_MIN_CANVAS_NDVI", 0.0))
 
 SEG_IGNORE_BORDER = int(config.get("SEG_IGNORE_BORDER", 0))
 

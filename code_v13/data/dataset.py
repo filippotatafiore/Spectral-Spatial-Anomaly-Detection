@@ -8,7 +8,7 @@ import random
 
 from utils.globals import (
     DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE, MAX_SHIFT, TEST_CLASSES,
-    CRAT_MIN_COVER, CRAT_MAX_COVER, CRAT_GAIN_CLAMP, CRAT_MIN_DONORS, CRAT_MIN_NDVI_DROP,
+    CRAT_MIN_COVER, CRAT_MAX_COVER, CRAT_GAIN_CLAMP, CRAT_MIN_DONORS, CRAT_MIN_NDVI_DROP, CRAT_MAX_SAM, CRAT_MIN_CANVAS_NDVI,
 )
 
 
@@ -56,31 +56,46 @@ def _random_aug(image, mask):
     return image, mask
 
 
-def _ndvi_drop(img_path, mask_path):
+def _donor_stats(img_path, mask_path):
     """
-        Mean NDVI of the donor background minus mean NDVI inside the anomaly mask (valid pixels only).
+        Donor statistics on valid pixels: NDVI(background) - NDVI(anomaly), and the mean background spectrum (context of the anomaly).
+        None if the donor has no valid anomaly pixels or too little valid background.
     """
     x = _load_image(img_path)
     m = torch.from_numpy(np.load(mask_path) > 0)
     valid = x.abs().sum(dim=0) > 0
-    ndvi = (x[7] - x[3]) / (x[7] + x[3] + 1e-6)     # B8 (NIR), B4 (red)
     inside, bg = m & valid, ~m & valid
-    if inside.sum() == 0 or bg.sum() == 0:
-        return 0.0
-    return float(ndvi[bg].mean() - ndvi[inside].mean())
+    if inside.sum() == 0 or bg.sum() < 100:
+        return None
+    ndvi = (x[7] - x[3]) / (x[7] + x[3] + 1e-6)     # B8 (NIR), B4 (red)
+    return float(ndvi[bg].mean() - ndvi[inside].mean()), x[:, bg].mean(dim=1)
+
+
+def _spectral_angle(a, b):
+    """
+        Spectral angle (rad) between spectra a (..., C) and b (C,): scale-invariant similarity of land cover.
+    """
+    cos = (a * b).sum(dim=-1) / (a.norm(dim=-1) * b.norm() + 1e-8)
+    return torch.arccos(cos.clamp(-1.0, 1.0))
 
 
 def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER, min_donors=CRAT_MIN_DONORS):
     """
-        Training anomalies usable as transplantation donors (partial masks only), grouped by anomaly type.
+        Training anomalies usable as transplantation donors (partial masks only), grouped by anomaly type:
+        {type: [(img_path, mask_path, background mean spectrum), ...]}
     """
     pool = {}
     for img_path, mask_path, cls in triples:
         cover = float((np.load(mask_path) > 0).mean())
-        if min_cover <= cover <= max_cover:
-            if cls == "deforestation" and CRAT_MIN_NDVI_DROP > 0 and _ndvi_drop(img_path, mask_path) < CRAT_MIN_NDVI_DROP:
-                continue   # masked area as green as its surroundings -> invisible (or mislabeled) once transplanted
-            pool.setdefault(cls, []).append((img_path, mask_path))
+        if not (min_cover <= cover <= max_cover):
+            continue
+        stats = _donor_stats(img_path, mask_path)
+        if stats is None:
+            continue
+        ndvi_drop, bg_spec = stats
+        if cls == "deforestation" and CRAT_MIN_NDVI_DROP > 0 and ndvi_drop < CRAT_MIN_NDVI_DROP:
+            continue   # masked area as green as its surroundings -> invisible (or mislabeled) once transplanted
+        pool.setdefault(cls, []).append((img_path, mask_path, bg_spec))
     return {c: v for c, v in pool.items() if len(v) >= min_donors}   # too few donors -> the same few shapes would be pasted over and over
 
 
@@ -121,21 +136,37 @@ class NormalImagesDataset(Dataset):
 
         self.donors = donors or {}       # {anomaly type: [(img_path, mask_path), ...]} for CRAT (training only)
         self.crat_prob = crat_prob
+        self.donor_bg = {c: torch.stack([d[2] for d in v]) for c, v in self.donors.items()}   # (N, C) donor background spectra per type
 
     def __len__(self):
         return len(self.files)
 
     def _cross_region_transplant(self, image, source):
         """
-            CRAT: transplant an anomaly whose type differs from the canvas region (types sampled with weight sqrt(#donors)).
+            CRAT: transplant an anomaly whose type differs from the canvas region (types sampled with weight sqrt(#matching donors)).
+            Context matching: only donors whose original background spectrum is close to the canvas one (spectral angle <= CRAT_MAX_SAM)
+            -> physically plausible composites (clearings into vegetated scenes, not into water, villages or bare farmland).
             Returns (image, mask, type index), or the unchanged image with type -1 if no valid transplant.
         """
         empty = torch.zeros((120, 120), dtype=torch.float32)
         types = [c for c in self.donors if c != source and self.donors[c]]
         if not types or (image.abs().sum(dim=0) == 0).float().mean() > 0.05:    # skip canvases with no-data
             return image, empty, -1
-        cls = random.choices(types, weights=[len(self.donors[c]) ** 0.5 for c in types])[0]
-        img_path, mask_path = random.choice(self.donors[cls])
+
+        canvas_spec = image.mean(dim=(1, 2))
+        canvas_ndvi = float((canvas_spec[7] - canvas_spec[3]) / (canvas_spec[7] + canvas_spec[3] + 1e-6))   # B8, B4
+        if canvas_ndvi < CRAT_MIN_CANVAS_NDVI:                                  # forest loss needs a vegetated context
+            types = [c for c in types if c != "deforestation"]
+        if CRAT_MAX_SAM > 0:
+            matches = {c: torch.nonzero(_spectral_angle(self.donor_bg[c], canvas_spec) <= CRAT_MAX_SAM).flatten().tolist() for c in types}
+        else:
+            matches = {c: list(range(len(self.donors[c]))) for c in types}
+        types = [c for c in types if matches[c]]
+        if not types:
+            return image, empty, -1
+
+        cls = random.choices(types, weights=[len(matches[c]) ** 0.5 for c in types])[0]
+        img_path, mask_path, _ = self.donors[cls][random.choice(matches[cls])]
         donor = _load_image(img_path, self.clip)
         dmask = torch.from_numpy(np.load(mask_path).astype(np.uint8)).float()
         dmask = dmask * (donor.abs().sum(dim=0) > 0).float()                    # never transplant no-data pixels
