@@ -8,7 +8,7 @@ import random
 
 from utils.globals import (
     DATASET_PATH, IN_CHANNELS, CLIP_REFLECTANCE, MAX_SHIFT, TEST_CLASSES,
-    CRAT_MIN_COVER, CRAT_MAX_COVER, CRAT_GAIN_CLAMP, CRAT_MIN_DONORS,
+    CRAT_MIN_COVER, CRAT_MAX_COVER, CRAT_GAIN_CLAMP, CRAT_MIN_DONORS, CRAT_MIN_NDVI_DROP,
 )
 
 
@@ -56,6 +56,20 @@ def _random_aug(image, mask):
     return image, mask
 
 
+def _ndvi_drop(img_path, mask_path):
+    """
+        Mean NDVI of the donor background minus mean NDVI inside the anomaly mask (valid pixels only).
+    """
+    x = _load_image(img_path)
+    m = torch.from_numpy(np.load(mask_path) > 0)
+    valid = x.abs().sum(dim=0) > 0
+    ndvi = (x[7] - x[3]) / (x[7] + x[3] + 1e-6)     # B8 (NIR), B4 (red)
+    inside, bg = m & valid, ~m & valid
+    if inside.sum() == 0 or bg.sum() == 0:
+        return 0.0
+    return float(ndvi[bg].mean() - ndvi[inside].mean())
+
+
 def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER, min_donors=CRAT_MIN_DONORS):
     """
         Training anomalies usable as transplantation donors (partial masks only), grouped by anomaly type.
@@ -64,6 +78,8 @@ def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER
     for img_path, mask_path, cls in triples:
         cover = float((np.load(mask_path) > 0).mean())
         if min_cover <= cover <= max_cover:
+            if cls == "deforestation" and CRAT_MIN_NDVI_DROP > 0 and _ndvi_drop(img_path, mask_path) < CRAT_MIN_NDVI_DROP:
+                continue   # masked area as green as its surroundings -> invisible (or mislabeled) once transplanted
             pool.setdefault(cls, []).append((img_path, mask_path))
     return {c: v for c, v in pool.items() if len(v) >= min_donors}   # too few donors -> the same few shapes would be pasted over and over
 

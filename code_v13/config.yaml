@@ -75,6 +75,7 @@ CRAT_MIN_COVER: 0.02        # donor anomalies = training anomalies with partial 
 CRAT_MAX_COVER: 0.7
 CRAT_GAIN_CLAMP: 1.5        # single brightness gain (same for all bands, spectral shape preserved) clamped to [1/x, x]
 CRAT_MIN_DONORS: 30         # anomaly types with fewer donors are not transplanted (burn scars: only 8 partial masks)
+CRAT_MIN_NDVI_DROP: 0.05    # deforestation donors must lose vegetation: NDVI(background) - NDVI(mask) >= this (0.0 = off)
 
 
 # --------------------------- coarse-label-aware segmentation
