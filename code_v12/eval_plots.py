@@ -10,8 +10,8 @@ from utils.globals import ARTIFACTS_DIR
 
 
 MODEL_VERSION = "v12"
-MODEL_RUN = "0"
-MODEL_ID = "epoch_20"       # "best_cls" | "best_seg" | "last" | "epoch_XX" (add "_tta" if TTA was used)
+MODEL_RUN = "1"
+MODEL_ID = "best_joint_tta"       # "best_cls" | "best_seg" | "best_joint" | "last" | "epoch_XX" (add "_tta" if TTA was used)
 
 
 

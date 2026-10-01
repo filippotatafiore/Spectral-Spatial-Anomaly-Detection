@@ -1,0 +1,91 @@
+# --------------------------- paths
+dataset_path: "Sentinel2_sup_anomaly_detection_v2"
+artifacts_dir: "artifacts"
+
+
+# --------------------------- data
+TRAIN_SOURCES: ["ben-ge-8k", "burn_scars", "deforestation", "mines"]
+TEST_CLASSES: ["burn_scars", "deforestation", "mines"]
+
+NORMAL_VAL_FRACTION: 0.10   # fraction of normals held out for validation
+NORMAL_TEST_FRACTION: 0.10  # fraction of normals held out for testing
+ANOMAL_VAL_FRACTION: 0.20   # fraction of anomalies held out for validation
+ANOMAL_TEST_FRACTION: 0.20   # fraction of anomalies held out for validation
+
+SPLIT_SALT: "ssad_1"
+GROUPED_SPLIT: true         # group ben-ge patches from the same acquisition in the splitting, so no scene appears in both train and val
+
+CLIP_REFLECTANCE: 1.5       # clip reflectance values to this before normalization
+
+MAX_SHIFT: 40               # random translation (px) in training data augmentation
+
+
+# --------------------------- model
+BACKBONE: "resnet50_softcon"  # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
+INPUT_UPSCALE: 2              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
+
+IN_CHANNELS: 12         # number of input channels (12 BANDS)
+EMBED_DIM: 512          # embedding dimension (output dim of the CNN encoder, dim of the transformer)
+NUM_ATT_HEADS: 8        # number of attention heads in the transformer
+NUM_TRANS_LAYERS: 4     # number of transformer layers
+DROPOUT: 0.1            # transformer dropout rate
+
+
+# --------------------------- train
+EPOCHS: 50
+BATCH_IMAGES: 32
+
+LR: 1e-4
+WEIGHT_DECAY: 1e-4
+AMP: true                   # float16 autocast
+
+ENCODER_LR_MULT: 0.1
+WARMUP_EPOCHS: 2
+TYPE_LOSS_WEIGHT: 0.5          # 0.0 = ablation without the anomaly-type head
+
+NUM_WORKERS: 2              # DataLoader worker processes
+SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
+SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segmentation task (more importance in the loss to anomalous pixels)
+
+SOURCE_WEIGHT_MULT:         # extra sampling multiplier per training source, on top of SOURCE_BALANCE_POWER (keys = normal source folders)
+  ben-ge-8k: 0.5            # easy normals (test FPR ~0.4%) -> sampled less
+  deforestation: 2.0        # hardest region-matched normals (test FPR ~39%) -> sampled more
+  mines: 1.5
+EARLY_STOP_PATIENCE: 0      # stop after N epochs without improvement of the joint val score (0 = disabled)
+
+SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
+
+MODEL_VERSION: "v13"        # model version for saving artifacts
+MODEL_RUN: "0"              # model run number
+
+
+# --------------------------- normality prototypes
+NUM_PROTOTYPES: 64          # number of normal prototypes in the memory
+PROTO_DIM: 128              # dimension of the deviation embedding space
+PROTO_MOMENTUM: 0.99        # EMA momentum of the prototype update
+DEV_MARGIN: 0.5             # anomalous tokens pushed to cosine distance >= DEV_MARGIN from every normal prototype
+DEV_TOPK: 8                 # image deviation score = mean of the top-k token deviations
+DEV_LOSS_WEIGHT: 0.5        # 0.0 = ablation (prototype memory without the deviation loss)
+PROTO_RESEED_MIN_RATE: 0.1  # after warmup the prototype EMA step is scaled by lr/LR; dead-prototype re-seeding stops below this ratio
+
+
+# --------------------------- cross-region anomaly transplantation (CRAT)
+CRAT_PROB: 0.2              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
+CRAT_MIN_COVER: 0.02        # donor anomalies = training anomalies with partial masks (coverage in [min, max])
+CRAT_MAX_COVER: 0.7
+CRAT_GAIN_CLAMP: 1.5        # per-band radiometric harmonization gain clamped to [1/x, x]
+
+
+# --------------------------- coarse-label-aware segmentation
+SEG_IGNORE_BORDER: 2        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
+                            # no-data pixels (all bands = 0) are always ignored
+
+
+# --------------------------- open-set evaluation
+HOLDOUT_CLASS: null         # e.g. "mines": anomaly type removed from train/val -> unseen type at test time
+
+
+# --------------------------- test
+TARGET_RECALL: 0.95             # target recall for tuning the classification threshold on validation data
+CLS_THRESHOLD_MODE: "recall"    # "recall" (TARGET_RECALL) | "f1" | "fpr" (TARGET_FPR)
+TARGET_FPR: 0.15                # max FPR on val region-matched normals (mode "fpr")
