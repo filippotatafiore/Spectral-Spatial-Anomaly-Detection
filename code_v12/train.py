@@ -12,6 +12,7 @@ from utils.globals import (
     BACKBONE, ENCODER_LR_MULT, WARMUP_EPOCHS, TYPE_LOSS_WEIGHT,
     MODEL_VERSION, MODEL_RUN,
     DEV_MARGIN, DEV_LOSS_WEIGHT,
+    SOURCE_WEIGHT_MULT, EARLY_STOP_PATIENCE, PROTO_RESEED_MIN_RATE,
 )
 from network.trans_UNet import build_model
 from data.dataset import make_loader, make_source_weights, NormalImagesDataset, AnomalyImagesDataset, _load_image
@@ -39,7 +40,7 @@ def save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_a
     torch.save(checkpoint, ARTIFACTS_DIR / filename)
 
 
-def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_decay=1e-4, device='cuda'):
+def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_decay=1e-4, device='cuda', val_hard_mask=None):
     if isinstance(device, str):
         device = torch.device(device)
 
@@ -102,13 +103,18 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         "val_loss_type": [],
         "val_loss_dev": [],
         "val_auc": [],
+        "val_auc_hard": [],
+        "val_joint": [],
         "val_dev_auc": [],
+        "proto_active": [],
+        "proto_reseeds": [],
         "val_type_acc": [],
         "lr": []
     }
 
     best_val_auc = 0.0
     best_val_seg_dice = float("inf")
+    best_val_joint, epochs_no_improve = -1.0, 0
     for epoch in range(1, epochs + 1):
         train_anom_samples = 0
         val_anom_samples = 0
@@ -121,6 +127,12 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         train_loss_seg_dice = 0.0
         train_loss_type = 0.0
         train_loss_dev = 0.0
+
+        # Prototype EMA step coupled to the LR schedule (the memory moves as fast as the features it tracks)
+        lr_frac = optimizer.param_groups[0]["lr"] / lr     # group 0 = non-pretrained params (base LR)
+        proto_rate = 1.0 if epoch <= WARMUP_EPOCHS else lr_frac
+        proto_reseed = proto_rate >= PROTO_RESEED_MIN_RATE
+        proto_reseeds = 0
 
         for images, cls_targets, seg_targets, type_targets in train_loader:
             images = images.to(device)
@@ -141,7 +153,7 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
             scaler.update()
 
             # EMA update of the normality memory with the tokens of the normal images only
-            model.prototypes.update(aux["z"].detach()[cls_targets == 0])
+            proto_reseeds += model.prototypes.update(aux["z"].detach()[cls_targets == 0], rate=proto_rate, reseed=proto_reseed)
 
             train_loss += loss.item() - gamma * l_dice.item()  # exclude dice loss (avoid counting all normal batches with zero dice loss)
             train_loss_cls += l_cls.item()
@@ -230,6 +242,13 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         except ValueError:
             val_dev_auc = 0.5
 
+        # AUC against the region-matched normals only (ben-ge normals are trivially easy) + joint model-selection score
+        if val_hard_mask is not None:
+            val_auc_hard = float(roc_auc_score(np.asarray(val_cls_targets)[val_hard_mask], np.asarray(val_cls_preds)[val_hard_mask]))
+        else:
+            val_auc_hard = val_auc
+        val_joint = 0.5 * (val_auc_hard + (1.0 - val_loss_seg_dice))
+
         # Log to history
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
@@ -246,6 +265,10 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         history["val_loss_dev"].append(val_loss_dev)
         history["val_auc"].append(val_auc)
         history["val_dev_auc"].append(val_dev_auc)
+        history["val_auc_hard"].append(val_auc_hard)
+        history["val_joint"].append(val_joint)
+        history["proto_active"].append(int((model.prototypes.usage > 0.1).sum().item()))
+        history["proto_reseeds"].append(proto_reseeds)
         history["val_type_acc"].append(val_type_acc)
         history["lr"].append(current_lr)
         
@@ -262,7 +285,9 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
             f"Val Loss: {val_loss:.4f} | "
             f"Val Image AUC: {val_auc:.4f} | "
             f"LR: {current_lr:.2e} | "
-            f"Dev: {train_loss_dev:.3f} | Val Dev AUC: {val_dev_auc:.4f}"
+            f"Dev: {train_loss_dev:.3f} | Val Dev AUC: {val_dev_auc:.4f} | "
+            f"Val AUC hard: {val_auc_hard:.4f} | Joint: {val_joint:.4f} | "
+            f"Protos: {history['proto_active'][-1]} active, {proto_reseeds} reseeded, rate {proto_rate:.3f}"
         )
 
         # Checkpoint saving
@@ -272,12 +297,24 @@ def train_model(model, train_loader, val_loader, epochs=50, lr=1e-4, weight_deca
         if val_loss_seg_dice < best_val_seg_dice:
             best_val_seg_dice = val_loss_seg_dice
             save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_seg.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+        if val_joint > best_val_joint:  # best cls-seg combined score
+            best_val_joint, epochs_no_improve = val_joint, 0
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "best_joint.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+        else:
+            epochs_no_improve += 1
 
         # Save checkpoint every 10 epochs
         if epoch == epochs:
             save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
         elif epoch % 10 == 0:
             save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, f"epoch_{epoch}.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+
+
+        # Optional early stopping on the joint score
+        if EARLY_STOP_PATIENCE > 0 and epochs_no_improve >= EARLY_STOP_PATIENCE and epoch < epochs:
+            print(f"Early stopping at epoch {epoch}: no joint-score improvement for {EARLY_STOP_PATIENCE} epochs")
+            save_model_checkpoint(model, optimizer, scheduler, scaler, epoch, best_val_auc, train_loader, "last.pth", val_cls_preds, val_cls_targets, val_seg_preds, val_seg_targets, device=device)
+            break
 
     print(f"\nTraining Complete. Best Validation Image AUC-ROC: {best_val_auc:.4f}")
 
@@ -314,9 +351,9 @@ def main():
         print(f"Band mean: {mean.numpy().round(4)}\nBand std:  {std.numpy().round(4)}")
 
     # Create data loaders for training and validation
-    train_weights = make_source_weights(train_normal_files + train_anomaly_triples, SOURCE_BALANCE_POWER)
+    train_weights = make_source_weights(train_normal_files + train_anomaly_triples, SOURCE_BALANCE_POWER, SOURCE_WEIGHT_MULT)
     if train_weights is not None:
-        print(f"Balanced sampling active (power={SOURCE_BALANCE_POWER})")
+        print(f"Balanced sampling active (power={SOURCE_BALANCE_POWER}, multipliers={SOURCE_WEIGHT_MULT})")
 
     train_dataset = ConcatDataset([
         NormalImagesDataset(train_normal_files, CLIP_REFLECTANCE, augment=True),
@@ -330,7 +367,8 @@ def main():
     val_loader = make_loader(val_dataset, BATCH_IMAGES, NUM_WORKERS)
 
     # Train the model
-    train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LR, weight_decay=WEIGHT_DECAY, device=DEVICE)
+    val_hard_mask = np.r_[[p.parent.name != "ben-ge-8k" for p in val_normal_files], np.ones(len(val_anomaly_triples), dtype=bool)]
+    train_model(model, train_loader, val_loader, epochs=EPOCHS, lr=LR, weight_decay=WEIGHT_DECAY, device=DEVICE, val_hard_mask=val_hard_mask)
 
 
 if __name__ == "__main__":

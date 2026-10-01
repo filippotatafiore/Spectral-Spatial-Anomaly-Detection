@@ -7,6 +7,7 @@ from sklearn.metrics import (
     roc_auc_score, precision_recall_curve, auc, f1_score,
     precision_score, recall_score, jaccard_score, confusion_matrix, roc_curve,
 )
+from torch.utils.data import ConcatDataset
 
 from utils.globals import (
     DEVICE, ARTIFACTS_DIR, DATASET_PATH, TEST_CLASSES, SEG_POS_WEIGHT, BATCH_IMAGES, NUM_WORKERS, AMP,
@@ -20,7 +21,8 @@ from utils.splits import split_normals, split_anomal
 
 
 # list of intermediate epochs to evaluate
-EVAL_EPOCHS = [10, 30, 40]
+EVAL_EPOCHS = [10, 20, 30, 40]
+TTA = True  # test-time augmentation: average the predictions over the 8 flips/rotations
 CLS_THRESHOLD = 0.5  # fallback threshold for image-level classification predictions
 SEG_THRESHOLD = 0.5  # fallback threshold for pixel-level segmentation predictions
 
@@ -161,6 +163,73 @@ def select_vis_samples(records, seg_preds, seg_targets, dev_maps=None):
     return out
 
 
+def _d4(x, k, flip):
+    """
+        Dihedral transform on the last two dims: optional horizontal flip, then k * 90° rotation.
+    """
+    if flip:
+        x = torch.flip(x, dims=[-1])
+    return torch.rot90(x, k, dims=[-2, -1])
+
+
+def _d4_inv(x, k, flip):
+    """
+        Inverse of _d4.
+    """
+    x = torch.rot90(x, -k, dims=[-2, -1])
+    if flip:
+        x = torch.flip(x, dims=[-1])
+    return x
+
+
+def predict(model, imgs):
+    """
+        Forward pass. With TTA: probabilities averaged over the 8 dihedral transforms, returned as logits
+        (so losses, thresholds and metrics downstream stay unchanged).
+    """
+    if not TTA:
+        return model(imgs)
+
+    cls_p = seg_p = type_p = dev_s = dev_m = 0.0
+    for k in range(4):
+        for flip in (False, True):
+            c, s, t, a = model(_d4(imgs, k, flip))
+            cls_p = cls_p + torch.sigmoid(c.float())
+            seg_p = seg_p + _d4_inv(torch.sigmoid(s.float()), k, flip)
+            type_p = type_p + torch.softmax(t.float(), dim=1)
+            dev_s = dev_s + a["dev_score"].float()
+            dev_m = dev_m + _d4_inv(a["dev_map"].float(), k, flip)
+
+    eps = 1e-6
+    aux = {"dev_score": dev_s / 8, "dev_map": dev_m / 8}
+    return torch.logit(cls_p / 8, eps), torch.logit(seg_p / 8, eps), torch.log(type_p / 8 + eps), aux
+
+
+def validation_predictions(model, device, use_amp):
+    """
+        Validation predictions computed with predict() (same order as in train.py: normals first, then anomalies),
+        so that the thresholds are tuned on the same kind of predictions as the test set.
+    """
+    _, val_normal_files, _ = split_normals(root=DATASET_PATH)
+    anomaly_splits = split_anomal(root=DATASET_PATH, classes=TEST_CLASSES)
+    val_anomaly_triples = [t for c in TEST_CLASSES for t in anomaly_splits[c]["val"]]
+    val_dataset = ConcatDataset([NormalImagesDataset(val_normal_files), AnomalyImagesDataset(val_anomaly_triples)])
+    loader = make_loader(val_dataset, batch_size=BATCH_IMAGES, num_workers=NUM_WORKERS, shuffle=False)
+
+    out = {"val_cls_preds": [], "val_cls_targets": [], "val_seg_preds": [], "val_seg_targets": []}
+    with torch.no_grad():
+        for imgs, cls_t, seg_t, _ in loader:
+            with torch.autocast(device_type=device.type, enabled=use_amp):
+                cls_logits, seg_logits, _, _ = predict(model, imgs.to(device))
+            out["val_cls_preds"].extend(torch.sigmoid(cls_logits).float().cpu().numpy())
+            out["val_cls_targets"].extend(cls_t.numpy())
+            out["val_seg_preds"].append(torch.sigmoid(seg_logits).half().cpu().numpy())
+            out["val_seg_targets"].append(seg_t.to(torch.uint8).numpy())
+    out["val_seg_preds"] = np.concatenate(out["val_seg_preds"])
+    out["val_seg_targets"] = np.concatenate(out["val_seg_targets"])
+    return out
+
+
 def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     if isinstance(device, str):
         device = torch.device(device)
@@ -191,11 +260,14 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
     criterion = MultiTaskLoss(alpha=alpha, beta=beta, gamma=gamma, seg_pos_weight=SEG_POS_WEIGHT, delta=TYPE_LOSS_WEIGHT)
     use_amp = AMP and device.type == "cuda"
 
-    # ------ Oriented classification threshold tuning (from checkpoint's validation predictions)
+    # ------ Validation predictions for threshold tuning (recomputed with TTA, so that the thresholds match the test predictions)
+    val_pred = validation_predictions(model, device, use_amp) if TTA else checkpoint
+
+    # ------ Oriented classification threshold tuning (from the validation predictions)
     cls_threshold = CLS_THRESHOLD
-    if "val_cls_preds" in checkpoint and "val_cls_targets" in checkpoint:
-        v_preds = np.array(checkpoint["val_cls_preds"])
-        v_targets = np.array(checkpoint["val_cls_targets"])
+    if "val_cls_preds" in val_pred and "val_cls_targets" in val_pred:
+        v_preds = np.array(val_pred["val_cls_preds"])
+        v_targets = np.array(val_pred["val_cls_targets"])
         precisions, recalls, thresholds = precision_recall_curve(v_targets, v_preds)
         
         if CLS_THRESHOLD_MODE == "f1":
@@ -223,9 +295,9 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
 
     # ------ Segmentation threshold tuning (from checkpoint's validation predictions)
     seg_threshold = SEG_THRESHOLD
-    if "val_seg_preds" in checkpoint and "val_seg_targets" in checkpoint:
-        v_sp = np.asarray(checkpoint["val_seg_preds"], dtype=np.float32)
-        v_st = np.asarray(checkpoint["val_seg_targets"]) > 0
+    if "val_seg_preds" in val_pred and "val_seg_targets" in val_pred:
+        v_sp = np.asarray(val_pred["val_seg_preds"], dtype=np.float32)
+        v_st = np.asarray(val_pred["val_seg_targets"]) > 0
         anom = v_st.any(axis=(1, 2))
         v_sp, v_st = v_sp[anom], v_st[anom]
         grid = np.round(np.arange(0.05, 0.96, 0.025), 3)
@@ -283,7 +355,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 type_tgt = torch.full((batch_size,), -1, dtype=torch.long, device=device)
 
                 with torch.autocast(device_type=device.type, enabled=use_amp):
-                    cls_logits, seg_logits, type_logits, aux = model(imgs)
+                    cls_logits, seg_logits, type_logits, aux = predict(model, imgs)
                     loss, l_cls, l_bce, l_dice, _ = criterion(cls_logits, seg_logits, cls_tgt, seg_tgt, type_logits, type_tgt)
                 
                 cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
@@ -367,7 +439,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
                 cls_tgt = cls_labels.to(device)
 
                 with torch.autocast(device_type=device.type, enabled=use_amp):
-                    cls_logits, seg_logits, type_logits, aux = model(imgs)
+                    cls_logits, seg_logits, type_logits, aux = predict(model, imgs)
                     loss, l_cls, l_bce, l_dice, _ = criterion(cls_logits, seg_logits, cls_tgt, masks_device, type_logits, type_labels.to(device))
 
                 cls_probs = torch.sigmoid(cls_logits).cpu().numpy()
@@ -423,6 +495,11 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
             matched = [p for p, s in zip(norm_cls_preds_snapshot, norm_sources_snapshot) if s == cls_name]
             if matched:  # AUC against the region-matched normals only
                 class_metrics["Image_AUC_ROC_matched_normals"] = float(roc_auc_score(cls_targets_class + [0.0] * len(matched), cls_preds_class + matched))
+                # Precision / FPR against the region-matched normals only (the default precision counts the FPs of ALL normal sources)
+                tp = int(np.sum((np.asarray(cls_preds_class) >= cls_threshold) & (np.asarray(cls_targets_class) > 0.5)))
+                fp = int(np.sum(np.asarray(matched) >= cls_threshold))
+                class_metrics["Image_Precision_matched_normals"] = tp / max(tp + fp, 1)
+                class_metrics["Image_FPR_matched_normals"] = fp / len(matched)
             class_metrics["Average_Total_Loss"] = cls_total_loss / cls_batches
             class_metrics["Average_Cls_Loss"] = cls_cls_loss / cls_batches
             class_metrics["Average_Seg_BCE_Loss"] = cls_seg_bce / cls_batches
@@ -495,7 +572,7 @@ def run_test_evaluation(checkpoint_name="best.pth", device=DEVICE):
         "TP": int(overall_metrics.pop("TP"))
     }
 
-    ckpt_id = checkpoint_name.removesuffix(".pth")
+    ckpt_id = checkpoint_name.removesuffix(".pth") + ("_tta" if TTA else "")
     # Save quantitative results JSON
     test_report = {
         "overall_metrics": overall_metrics,
@@ -562,6 +639,9 @@ if __name__ == "__main__":
     # Add best_seg.pth
     if (RESULTS_DIR / "best_seg.pth").exists() and "best_seg.pth" not in checkpoints_to_run:
         checkpoints_to_run.append("best_seg.pth")
+    # Add best_joint.pth
+    if (RESULTS_DIR / "best_joint.pth").exists() and "best_joint.pth" not in checkpoints_to_run:
+        checkpoints_to_run.append("best_joint.pth")
 
 
     if not checkpoints_to_run:

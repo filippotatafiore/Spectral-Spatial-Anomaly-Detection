@@ -75,6 +75,9 @@ NUM_WORKERS = config["NUM_WORKERS"]
 SOURCE_BALANCE_POWER = float(config.get("SOURCE_BALANCE_POWER", 0.0))
 SEG_POS_WEIGHT = float(config.get("SEG_POS_WEIGHT", 8.0))
 
+SOURCE_WEIGHT_MULT = config.get("SOURCE_WEIGHT_MULT") or {}
+EARLY_STOP_PATIENCE = int(config.get("EARLY_STOP_PATIENCE", 0))
+
 SEED = config["SEED"]
 
 MODEL_VERSION = config.get("MODEL_VERSION", "v6")
@@ -88,6 +91,7 @@ PROTO_MOMENTUM = float(config.get("PROTO_MOMENTUM", 0.99))
 DEV_MARGIN = float(config.get("DEV_MARGIN", 0.5))
 DEV_TOPK = int(config.get("DEV_TOPK", 8))
 DEV_LOSS_WEIGHT = float(config.get("DEV_LOSS_WEIGHT", 0.0))
+PROTO_RESEED_MIN_RATE = float(config.get("PROTO_RESEED_MIN_RATE", 0.0))
 
 
 # --------------------------- test

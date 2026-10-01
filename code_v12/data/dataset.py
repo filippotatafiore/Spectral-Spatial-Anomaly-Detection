@@ -108,12 +108,13 @@ class AnomalyImagesDataset(Dataset):
         return image, cls_tensor, mask, type_tensor  # for training
 
 
-def make_source_weights(files, power):
+def make_source_weights(files, power, mult=None):
     """
         Dataset is unbalanced -> oversample rare training sources with weight 1/n_source^power.
     """
 
-    if power <= 0:
+    mult = mult or {}
+    if power <= 0 and not mult:
         return None
 
     def _source_name(item):
@@ -123,7 +124,7 @@ def make_source_weights(files, power):
 
     sources = [_source_name(f) for f in files]
     counts = Counter(sources)
-    return torch.tensor([1.0 / (counts[s] ** power) for s in sources], dtype=torch.double)
+    return torch.tensor([mult.get(s, 1.0) / (counts[s] ** power) for s in sources], dtype=torch.double)
 
 
 def _seed_worker(worker_id):

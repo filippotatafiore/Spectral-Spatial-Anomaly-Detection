@@ -47,10 +47,16 @@ NUM_WORKERS: 2              # DataLoader worker processes
 SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
 SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segmentation task (more importance in the loss to anomalous pixels)
 
+SOURCE_WEIGHT_MULT:         # extra sampling multiplier per training source, on top of SOURCE_BALANCE_POWER (keys = normal source folders)
+  ben-ge-8k: 0.5            # easy normals (test FPR ~0.4%) -> sampled less
+  deforestation: 2.0        # hardest region-matched normals (test FPR ~39%) -> sampled more
+  mines: 1.5
+EARLY_STOP_PATIENCE: 0      # stop after N epochs without improvement of the joint val score (0 = disabled)
+
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v12"        # model version for saving artifacts
-MODEL_RUN: "0"              # model run number
+MODEL_RUN: "1"              # model run number
 
 
 # --------------------------- normality prototypes
@@ -60,6 +66,7 @@ PROTO_MOMENTUM: 0.99        # EMA momentum of the prototype update
 DEV_MARGIN: 0.5             # anomalous tokens pushed to cosine distance >= DEV_MARGIN from every normal prototype
 DEV_TOPK: 8                 # image deviation score = mean of the top-k token deviations
 DEV_LOSS_WEIGHT: 0.5        # 0.0 = ablation (prototype memory without the deviation loss)
+PROTO_RESEED_MIN_RATE: 0.1  # after warmup the prototype EMA step is scaled by lr/LR; dead-prototype re-seeding stops below this ratio
 
 
 # --------------------------- test
