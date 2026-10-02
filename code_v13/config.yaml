@@ -56,7 +56,7 @@ EARLY_STOP_PATIENCE: 0      # stop after N epochs without improvement of the joi
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v13"        # model version for saving artifacts
-MODEL_RUN: "0"              # model run number
+MODEL_RUN: "1"              # model run number
 
 
 # --------------------------- normality prototypes
@@ -86,7 +86,7 @@ SEG_IGNORE_BORDER: 2        # pixels within this distance (px) of a mask boundar
 
 
 # --------------------------- open-set evaluation
-HOLDOUT_CLASS: null         # e.g. "mines": anomaly type removed from train/val -> unseen type at test time
+HOLDOUT_CLASS: "mines"         # e.g. "mines": anomaly type removed from train/val -> unseen type at test time. null = all types seen in training
 
 
 # --------------------------- test
