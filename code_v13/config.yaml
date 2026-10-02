@@ -56,7 +56,7 @@ EARLY_STOP_PATIENCE: 0      # stop after N epochs without improvement of the joi
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v13"        # model version for saving artifacts
-MODEL_RUN: "1"              # model run number
+MODEL_RUN: "2"              # model run number
 
 
 # --------------------------- normality prototypes
@@ -70,7 +70,7 @@ PROTO_RESEED_MIN_RATE: 0.1  # after warmup the prototype EMA step is scaled by l
 
 
 # --------------------------- cross-region anomaly transplantation (CRAT)
-CRAT_PROB: 0.2              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
+CRAT_PROB: 0.0              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
 CRAT_MIN_COVER: 0.02        # donor anomalies = training anomalies with partial masks (coverage in [min, max])
 CRAT_MAX_COVER: 0.7
 CRAT_GAIN_CLAMP: 1.5        # single brightness gain (same for all bands, spectral shape preserved) clamped to [1/x, x]
