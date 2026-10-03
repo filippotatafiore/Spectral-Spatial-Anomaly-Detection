@@ -4,6 +4,8 @@ datasets/**
 Sentinel2_anomaly_detection/**
 Sentinel2_sup_anomaly_detection/**
 Sentinel2_sup_anomaly_detection_v2/**
+Sentinel2_sup_anomaly_detection_v3/**
+build_dataset/new_data*
 prova.py
 test_preprocessing.py
 artifacts/
