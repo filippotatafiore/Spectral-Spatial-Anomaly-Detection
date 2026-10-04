@@ -6,8 +6,35 @@ import matplotlib.pyplot as plt
 
 from utils.globals import ARTIFACTS_DIR
 
-MODEL_VERSION = "v13"
-MODEL_RUN = "2"
+MODEL_VERSION = "v14"
+MODEL_RUN = "3"
+
+
+BEST_COLORS = {"best_cls": "#d62728", "best_seg": "#2ca02c", "best_joint": "#9467bd"}
+
+def best_epochs(history):
+    """
+        Epochs of the saved checkpoints, recomputed with the same rules as train.py
+        (strict improvement -> first epoch reaching the best value).
+    """
+    epochs = history["epoch"]
+    best = {"best_cls": epochs[history["val_auc"].index(max(history["val_auc"]))],
+            "best_seg": epochs[history["val_loss_seg_dice"].index(min(history["val_loss_seg_dice"]))]}
+    if "val_joint" in history:     # v12_1 and later
+        best["best_joint"] = epochs[history["val_joint"].index(max(history["val_joint"]))]
+    return best
+
+
+def mark_best(ax, best):
+    """
+        Vertical dotted line at each checkpoint epoch (checkpoints sharing an epoch share one line).
+    """
+    by_epoch = {}
+    for name, ep in best.items():
+        by_epoch.setdefault(ep, []).append(name)
+    for ep, names in sorted(by_epoch.items()):
+        ax.axvline(ep, color=BEST_COLORS[names[0]], linestyle=":", linewidth=1.2, label=f"{' = '.join(names)} (ep {ep})")
+
 
 def plot_training_metrics(metrics_path, output_dir):
     metrics_path = Path(metrics_path)
@@ -25,6 +52,8 @@ def plot_training_metrics(metrics_path, output_dir):
     if not epochs:
         print("Error: No epoch data found in metrics.")
         return
+
+    best = best_epochs(history)     # epochs of best_cls / best_seg / best_joint
         
     # Set matplotlib style
     plt.rcParams["font.family"] = "sans-serif"
@@ -37,6 +66,7 @@ def plot_training_metrics(metrics_path, output_dir):
     plt.figure(figsize=(7, 5), dpi=150)
     plt.plot(epochs, history["train_loss"], label="Train Loss", color="#1f77b4", linewidth=2)
     plt.plot(epochs, history["val_loss"], label="Val Loss", color="#ff7f0e", linewidth=2, linestyle="--")
+    mark_best(plt.gca(), best)
     plt.xlabel("Epoch")
     plt.ylabel("Multi-Task Loss")
     plt.title("Training and Validation Loss Convergence")
@@ -73,6 +103,9 @@ def plot_training_metrics(metrics_path, output_dir):
     axes[2].legend(frameon=True)
     
     plt.suptitle("Multi-Task Loss Components Decomposition", y=1.02, fontsize=12, fontweight="bold")
+    for ax in axes:
+        mark_best(ax, best)
+        ax.legend(frameon=True, fontsize=7)     # rebuild the legend to include the checkpoint lines
     plt.tight_layout()
     plt.savefig(output_dir / "loss_components.png", dpi=300)
     plt.close()

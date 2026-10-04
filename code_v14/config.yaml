@@ -21,8 +21,8 @@ MAX_SHIFT: 40               # random translation (px) in training data augmentat
 
 
 # --------------------------- model
-BACKBONE: "cnn"  # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
-INPUT_UPSCALE: 1              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
+BACKBONE: "resnet50_softcon"  # "cnn" (baseline) | "resnet50_softcon" | "resnet50_moco"
+INPUT_UPSCALE: 2              # 1: no upsampling, 2: 120 -> 240 before the pretrained ResNet
 
 IN_CHANNELS: 12               # number of input channels (12 BANDS)
 EMBED_DIM: 512                # embedding dimension (output dim of the CNN encoder, dim of the transformer)
@@ -30,7 +30,7 @@ NUM_ATT_HEADS: 8              # number of attention heads in the transformer
 NUM_TRANS_LAYERS: 4           # number of transformer layers
 DROPOUT: 0.1                  # transformer dropout rate
 
-USE_DEV_BRANCH: false          # false = no normality-prototype branch
+USE_DEV_BRANCH: true          # false = no normality-prototype branch
 
 
 # --------------------------- train
@@ -49,13 +49,16 @@ NUM_WORKERS: 2              # DataLoader worker processes
 SOURCE_BALANCE_POWER: 0.5   # dataset unbalanced -> oversample rare training sources with weight 1/n_source^p (0.0 = no balancing, 1.0 = full balancing)
 SEG_POS_WEIGHT: 1.0         # upweight the loss of anomalous pixels in the segmentation task (more importance in the loss to anomalous pixels)
 
-SOURCE_WEIGHT_MULT: {}
+SOURCE_WEIGHT_MULT:
+  ben-ge-8k: 0.5            # easy normals (test FPR ~0.4%) -> sampled less
+  deforestation: 2.0        # hardest region-matched normals (test FPR ~39%) -> sampled more
+  mines: 1.0
 EARLY_STOP_PATIENCE: 0      # stop after N epochs without improvement of the joint val score (0 = disabled)
 
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v14"        # model version for saving artifacts
-MODEL_RUN: "0"              # model run number
+MODEL_RUN: "3"              # model run number
 
 
 # --------------------------- normality prototypes
@@ -69,7 +72,7 @@ PROTO_RESEED_MIN_RATE: 0.1  # after warmup the prototype EMA step is scaled by l
 
 
 # --------------------------- cross-region anomaly transplantation (CRAT)
-CRAT_PROB: 0.0              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
+CRAT_PROB: 0.2              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
 CRAT_MIN_COVER: 0.02        # donor anomalies = training anomalies with partial masks (coverage in [min, max])
 CRAT_MAX_COVER: 0.7
 CRAT_GAIN_CLAMP: 1.5        # single brightness gain (same for all bands, spectral shape preserved) clamped to [1/x, x]
@@ -80,8 +83,8 @@ CRAT_MIN_CANVAS_NDVI: 0.5   # deforestation is only transplanted into vegetated 
 
 
 # --------------------------- coarse-label-aware segmentation
-SEG_IGNORE_BORDER: 0        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
-SEG_IGNORE_NODATA: false    # no-data pixels (all bands = 0): ignored by the seg/deviation losses and forced non-anomalous at test
+SEG_IGNORE_BORDER: 2        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
+SEG_IGNORE_NODATA: true     # no-data pixels (all bands = 0): ignored by the seg/deviation losses and forced non-anomalous at test
 
 
 # --------------------------- open-set evaluation

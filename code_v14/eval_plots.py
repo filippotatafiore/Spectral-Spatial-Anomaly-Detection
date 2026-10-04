@@ -9,8 +9,8 @@ from sklearn.metrics import roc_curve, roc_auc_score
 from utils.globals import ARTIFACTS_DIR
 
 
-MODEL_VERSION = "v13"
-MODEL_RUN = "2"
+MODEL_VERSION = "v14"
+MODEL_RUN = "3"
 MODEL_ID = "best_joint_tta"       # "best_cls" | "best_seg" | "best_joint" | "last" | "epoch_XX" (add "_tta" if TTA was used)
 
 
