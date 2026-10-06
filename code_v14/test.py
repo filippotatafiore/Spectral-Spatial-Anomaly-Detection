@@ -149,15 +149,13 @@ def _rgb(path):
 
 def select_vis_samples(records, seg_preds, seg_targets, dev_maps=None):
     """
-        Qualitative samples: best / median Dice per anomaly class + the 2 most confident false positives (region-matched normals).
+        Qualitative samples: best / median Dice per anomaly class
     """
     picks = []
     for c in TEST_CLASSES:
         idx = sorted((k for k, r in enumerate(records) if r["group"] == c and "dice" in r), key=lambda k: records[k]["dice"])
         if idx:
             picks += [(c, "best", idx[-1]), (c, "median", idx[len(idx) // 2])]
-    fps = sorted((k for k, r in enumerate(records) if r["group"].startswith("normal-") and r["group"] != "normal-ben-ge-8k"), key=lambda k: -records[k]["cls_prob"])
-    picks += [(records[k]["group"], f"fp{n}", k) for n, k in enumerate(fps[:2])]
 
     out = {}
     for g, tag, k in picks:

@@ -1,3 +1,14 @@
+# Randomly initialized CNN encoder (train from scratch)
+#     -> BACKBONE: "cnn"                INPUT_UPSCALE: 1
+#
+# Pretrained ResNet50 encoder (ImageNet)
+#     -> BACKBONE: "resnet50_softcon"   INPUT_UPSCALE: 2
+#
+# Pretrained ResNet50 encoder with Cross-Region Anomaly Transplantation (CRAT)
+#     -> CRAT_PROB: 0.2
+
+
+
 # --------------------------- paths
 dataset_path: "Sentinel2_sup_anomaly_detection_v3"
 artifacts_dir: "artifacts"
@@ -58,7 +69,7 @@ EARLY_STOP_PATIENCE: 0      # stop after N epochs without improvement of the joi
 SEED: 0                     # random seed for reproducibility (model init, data shuffling, center sampling)
 
 MODEL_VERSION: "v14"        # model version for saving artifacts
-MODEL_RUN: "3"              # model run number
+MODEL_RUN: "2"              # model run number
 
 
 # --------------------------- normality prototypes
@@ -72,7 +83,7 @@ PROTO_RESEED_MIN_RATE: 0.1  # after warmup the prototype EMA step is scaled by l
 
 
 # --------------------------- cross-region anomaly transplantation (CRAT)
-CRAT_PROB: 0.2              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
+CRAT_PROB: 0.0              # prob. that a training normal image receives an anomaly transplanted from another region (0.0 = ablation)
 CRAT_MIN_COVER: 0.02        # donor anomalies = training anomalies with partial masks (coverage in [min, max])
 CRAT_MAX_COVER: 0.7
 CRAT_GAIN_CLAMP: 1.5        # single brightness gain (same for all bands, spectral shape preserved) clamped to [1/x, x]
@@ -83,8 +94,8 @@ CRAT_MIN_CANVAS_NDVI: 0.5   # deforestation is only transplanted into vegetated 
 
 
 # --------------------------- coarse-label-aware segmentation
-SEG_IGNORE_BORDER: 2        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
-SEG_IGNORE_NODATA: true     # no-data pixels (all bands = 0): ignored by the seg/deviation losses and forced non-anomalous at test
+SEG_IGNORE_BORDER: 0        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
+SEG_IGNORE_NODATA: false    # no-data pixels (all bands = 0): ignored by the seg/deviation losses and forced non-anomalous at test
 
 
 # --------------------------- open-set evaluation

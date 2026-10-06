@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from utils.globals import ARTIFACTS_DIR
 
 MODEL_VERSION = "v14"
-MODEL_RUN = "3"
+MODEL_RUN = "2"
 
 
 BEST_COLORS = {"best_cls": "#d62728", "best_seg": "#2ca02c", "best_joint": "#9467bd"}
