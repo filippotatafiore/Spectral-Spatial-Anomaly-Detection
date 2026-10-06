@@ -237,7 +237,7 @@ def plot_evaluation_results(metrics_json_path, vis_samples_path, output_dir, sco
         plt.xticks(range(1, len(groups) + 1), [g.replace("normal-", "Normal\n").replace("_", " ") for g in groups], fontsize=8)
         plt.ylabel("Predicted anomaly probability")
         plt.title("Image-Level Anomaly Score Distributions (red = normal, blue = anomalous)")
-        plt.legend(frameon=True)
+        plt.legend(loc="upper left", bbox_to_anchor=(0.02, 0.98), frameon=True)
         plt.tight_layout()
         plt.savefig(output_dir / "score_distributions.png", dpi=300)
         plt.close()
