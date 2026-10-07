@@ -94,8 +94,8 @@ CRAT_MIN_CANVAS_NDVI: 0.5   # deforestation is only transplanted into vegetated 
 
 
 # --------------------------- coarse-label-aware segmentation
-SEG_IGNORE_BORDER: 0        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
-SEG_IGNORE_NODATA: false    # no-data pixels (all bands = 0): ignored by the seg/deviation losses and forced non-anomalous at test
+SEG_IGNORE_BORDER: 2        # pixels within this distance (px) of a mask boundary are ignored by the seg/deviation losses (0 = off)
+SEG_IGNORE_NODATA: true     # no-data pixels (all bands = 0): ignored by the seg/deviation losses and forced non-anomalous at test
 
 
 # --------------------------- open-set evaluation

@@ -79,7 +79,7 @@ class DeviationLoss(nn.Module):
 
 class MultiTaskLoss(nn.Module):
     """
-        Total Loss = alpha * Classification BCE + beta * Segmentation BCE + gamma * Segmentation Dice
+        Total Loss = alpha * Classification BCE + beta * Segmentation BCE + gamma * Segmentation Dice + delta * Type Loss
     """
 
     def __init__(self, alpha=1.0, beta=1.0, gamma=1.0, seg_pos_weight=8.0, delta=0.0):

@@ -101,10 +101,7 @@ def build_donor_pool(triples, min_cover=CRAT_MIN_COVER, max_cover=CRAT_MAX_COVER
 
 def _transplant(canvas, donor, dmask, gain_clamp=CRAT_GAIN_CLAMP):
     """
-        Paste the masked anomaly of a donor image into a canvas (normal) image:
-            - random rotation/flip of the donor (new position/orientation of the anomaly)
-            - one brightness gain (median over bands) matching the donor background to the canvas: band ratios (NDVI, NBR, ...) preserved
-            - feathered 5x5 edges (no sharp seams; the seam band is also ignored by the seg loss)
+        Paste the masked anomaly of a donor image into a canvas (normal) image.
     """
     k = random.randint(0, 3)
     donor, dmask = torch.rot90(donor, k, dims=[-2, -1]), torch.rot90(dmask, k, dims=[-2, -1])
