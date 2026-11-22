@@ -1,0 +1,221 @@
+{
+    "overall_metrics": {
+        "Image_AUC_ROC": 0.9666262971016487,
+        "Image_F1": 0.9094292803970223,
+        "Image_Precision": 0.8736591179976162,
+        "Image_Recall": 0.9482535575679172,
+        "Image_Recall_at_FPR_5pct": 0.8408796895213454,
+        "Pixel_AUC_ROC": 0.9615171911900676,
+        "Pixel_AUC_PR": 0.8662631869785656,
+        "Pixel_IoU": 0.6692197201391014,
+        "Pixel_Dice": 0.8018353869953666,
+        "Pixel_Dice_per_image": 0.6892654818465254,
+        "Pixel_Dice_per_image_partial_masks": 0.6587631344196143,
+        "Normal_Images_With_FP_Region": 0.1744340878828229,
+        "Average_Total_Loss": 0.8740797719115821,
+        "Average_Cls_Loss": 0.31205431260168554,
+        "Average_Seg_BCE_Loss": 0.2024195226980373,
+        "Average_Seg_Dice_Loss": 0.34308753735744035,
+        "Classification_Threshold": 0.08121012151241302,
+        "Segmentation_Threshold": 0.25,
+        "Pixel_Dice_per_image_gated": 0.6832476509921859,
+        "Normal_Images_With_FP_Region_gated": 0.13315579227696406,
+        "Image_AUC_ROC_hard_normals": 0.948905668347546,
+        "Image_FPR_hard_normals": 0.2167689161554192,
+        "Image_AUC_ROC_deviation_only": 0.5,
+        "Image_AUC_ROC_deviation_only_hard_normals": 0.5,
+        "Pixel_AUC_ROC_deviation_only": 0.5,
+        "Type_Region_Shortcut_on_Normals": 0.7300613496932515
+    },
+    "class_metrics": {
+        "normal": {
+            "Average_Total_Loss": 0.20668055718609443,
+            "Average_Cls_Loss": 0.14640297228470445,
+            "Average_Seg_BCE_Loss": 0.06027758865578411,
+            "Average_Seg_Dice_Loss": 0.0,
+            "Image_AUC_ROC": 1.0,
+            "Image_F1": 0.0,
+            "Image_Precision": 0.0,
+            "Image_Recall": 0.0,
+            "Pixel_AUC_ROC": 1.0,
+            "Pixel_AUC_PR": 0.0,
+            "Pixel_IoU": 1.0,
+            "Pixel_Dice": 1.0,
+            "TN": 751,
+            "FP": 0,
+            "FN": 0,
+            "TP": 0
+        },
+        "burn_scars": {
+            "Image_AUC_ROC": 0.9699437359051131,
+            "Image_F1": 0.7375565610859729,
+            "Image_Precision": 0.6059479553903345,
+            "Image_Recall": 0.9421965317919075,
+            "Image_Recall_at_FPR_5pct": 0.9017341040462428,
+            "Pixel_AUC_ROC": 0.9481524359523446,
+            "Pixel_AUC_PR": 0.9767672170680617,
+            "Pixel_IoU": 0.8456363325045196,
+            "Pixel_Dice": 0.9163629016305228,
+            "TN": 645,
+            "FP": 106,
+            "FN": 10,
+            "TP": 163,
+            "Pixel_Dice_per_image": 0.8649477131302576,
+            "Pixel_Dice_per_image_partial_masks": 0.8156258786225637,
+            "Image_AUC_ROC_matched_normals": 0.9549132947976878,
+            "Image_Precision_matched_normals": 0.844559585492228,
+            "Image_FPR_matched_normals": 0.17142857142857143,
+            "Average_Total_Loss": 0.9966278076171875,
+            "Average_Cls_Loss": 0.4235757850110531,
+            "Average_Seg_BCE_Loss": 0.369440421462059,
+            "Average_Seg_Dice_Loss": 0.1649474799633026
+        },
+        "deforestation": {
+            "Image_AUC_ROC": 0.9660280410433147,
+            "Image_F1": 0.8641711229946524,
+            "Image_Precision": 0.792156862745098,
+            "Image_Recall": 0.9505882352941176,
+            "Image_Recall_at_FPR_5pct": 0.8117647058823529,
+            "Pixel_AUC_ROC": 0.9546708581910288,
+            "Pixel_AUC_PR": 0.7601580042912395,
+            "Pixel_IoU": 0.5616328393277632,
+            "Pixel_Dice": 0.7192892275103024,
+            "TN": 645,
+            "FP": 106,
+            "FN": 21,
+            "TP": 404,
+            "Pixel_Dice_per_image": 0.609546150099869,
+            "Pixel_Dice_per_image_partial_masks": 0.6077374251574664,
+            "Image_AUC_ROC_matched_normals": 0.9492876145433048,
+            "Image_Precision_matched_normals": 0.8859649122807017,
+            "Image_FPR_matched_normals": 0.2613065326633166,
+            "Average_Total_Loss": 1.1400967027459825,
+            "Average_Cls_Loss": 0.49539080049310413,
+            "Average_Seg_BCE_Loss": 0.19348293649298803,
+            "Average_Seg_Dice_Loss": 0.4245845356157848
+        },
+        "mines": {
+            "Image_AUC_ROC": 0.9647416413373859,
+            "Image_F1": 0.7427293064876958,
+            "Image_Precision": 0.6102941176470589,
+            "Image_Recall": 0.9485714285714286,
+            "Image_Recall_at_FPR_5pct": 0.8514285714285714,
+            "Pixel_AUC_ROC": 0.85975985306653,
+            "Pixel_AUC_PR": 0.8652225134944687,
+            "Pixel_IoU": 0.6452671935179519,
+            "Pixel_Dice": 0.7843919772544399,
+            "TN": 646,
+            "FP": 106,
+            "FN": 9,
+            "TP": 166,
+            "Pixel_Dice_per_image": 0.7091951388764868,
+            "Pixel_Dice_per_image_partial_masks": 0.6915064621551402,
+            "Image_AUC_ROC_matched_normals": 0.9365517241379311,
+            "Image_Precision_matched_normals": 0.8736842105263158,
+            "Image_FPR_matched_normals": 0.20869565217391303,
+            "Average_Total_Loss": 1.4280722737312317,
+            "Average_Cls_Loss": 0.4353530630469322,
+            "Average_Seg_BCE_Loss": 0.6248183945814768,
+            "Average_Seg_Dice_Loss": 0.33106793214877445
+        }
+    },
+    "confusion_matrix": {
+        "TN": 646,
+        "FP": 106,
+        "FN": 40,
+        "TP": 733
+    },
+    "fp_by_normal_source": {
+        "ben-ge-8k": {
+            "FP": 0,
+            "N": 262
+        },
+        "burn_scars": {
+            "FP": 30,
+            "N": 175
+        },
+        "deforestation": {
+            "FP": 52,
+            "N": 199
+        },
+        "mines": {
+            "FP": 24,
+            "N": 115
+        }
+    },
+    "type_classes": [
+        "burn_scars",
+        "deforestation",
+        "mines"
+    ],
+    "type_metrics": {
+        "Type_Accuracy": 0.9793014230271668,
+        "Type_Macro_F1": 0.9779135679031216,
+        "Type_Confusion(rows=true)": [
+            [
+                167,
+                5,
+                1
+            ],
+            [
+                0,
+                418,
+                7
+            ],
+            [
+                0,
+                3,
+                172
+            ]
+        ],
+        "EndToEnd_4class_Macro_F1": 0.8947512002050801,
+        "EndToEnd_4class_Confusion(0=normal)": [
+            [
+                646,
+                28,
+                53,
+                25
+            ],
+            [
+                10,
+                161,
+                2,
+                0
+            ],
+            [
+                21,
+                0,
+                398,
+                6
+            ],
+            [
+                9,
+                0,
+                2,
+                164
+            ]
+        ],
+        "Type_Pred_on_Normals_by_Source": {
+            "ben-ge-8k": [
+                7,
+                213,
+                42
+            ],
+            "burn_scars": [
+                133,
+                34,
+                8
+            ],
+            "deforestation": [
+                3,
+                144,
+                52
+            ],
+            "mines": [
+                1,
+                34,
+                80
+            ]
+        }
+    }
+}
